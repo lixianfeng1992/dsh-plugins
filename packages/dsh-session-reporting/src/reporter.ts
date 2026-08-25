@@ -120,10 +120,17 @@ export class SessionReporter {
   async listSessions(): Promise<unknown[]> {
     const result = await this.pool.query(
       `SELECT s.id, s.user_id, s.canonical_remote, s.created_at, s.cwd, s.last_seq,
-              s.updated_at, count(e.seq)::int AS event_count
+              s.updated_at, s.header->>'origin' AS origin, title.value AS title,
+              count(e.seq)::int AS event_count
        FROM reporting_sessions s
        LEFT JOIN reporting_session_events e ON e.session_id = s.id
-       GROUP BY s.id ORDER BY s.updated_at DESC`,
+       LEFT JOIN LATERAL (
+         SELECT event::jsonb->'data'->>'title' AS value
+         FROM reporting_session_events
+         WHERE session_id = s.id AND type = 'session/title'
+         ORDER BY seq DESC LIMIT 1
+       ) title ON true
+       GROUP BY s.id, title.value ORDER BY s.updated_at DESC`,
     )
     return result.rows
   }

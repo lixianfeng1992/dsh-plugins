@@ -7,7 +7,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 
 interface Rpc { call(channel: string, endpoint: string, payload: unknown): Promise<any> }
-interface Session { id: string; user_id: string; canonical_remote: string; created_at: number; cwd: string; last_seq: number; event_count: number; updated_at: string }
+interface Session { id: string; user_id: string; canonical_remote: string; created_at: number; cwd: string; last_seq: number; event_count: number; updated_at: string; title?: string; origin?: string }
 interface EventRow { session_id: string; seq: number; type: string; event_time: number; event: string }
 
 class Store {
@@ -53,7 +53,7 @@ function SessionReportingDrawer({ store }: { store: Store }): any {
     createElement('header', { className: 'dsh-sr-header' }, createElement('div', null, createElement(Database, { size: 18 }), createElement('strong', null, 'Session 上报')), createElement('button', { type: 'button', title: '关闭', 'aria-label': '关闭', onClick: () => store.setOpen(false) }, createElement(X, { size: 18 }))),
     state.error ? createElement('div', { className: 'dsh-sr-error' }, state.error) : null,
     state.loading ? createElement('div', { className: 'dsh-sr-empty' }, '加载中…') : state.sessions.length === 0 ? createElement('div', { className: 'dsh-sr-empty' }, '暂无上报会话') : createElement('div', { className: 'dsh-sr-list' }, state.sessions.map(session => createElement('section', { key: session.id, className: 'dsh-sr-session' },
-      createElement('button', { type: 'button', className: 'dsh-sr-session-row', onClick: () => setExpanded(expanded === session.id ? undefined : session.id) }, createElement(ChevronRight, { size: 15, className: expanded === session.id ? 'dsh-sr-open' : undefined }), createElement('div', null, createElement('strong', null, session.id), createElement('small', null, `${session.canonical_remote} · ${session.event_count} events`))),
+      createElement('button', { type: 'button', className: 'dsh-sr-session-row', onClick: () => setExpanded(expanded === session.id ? undefined : session.id) }, createElement(ChevronRight, { size: 15, className: expanded === session.id ? 'dsh-sr-open' : undefined }), createElement('div', null, createElement('strong', null, session.title ?? '未命名会话'), createElement('small', null, `${session.origin === 'subagent' ? '子代理 · ' : ''}${session.canonical_remote} · ${session.event_count} events`), createElement('small', { className: 'dsh-sr-id' }, session.id))),
       expanded === session.id ? createElement('div', { className: 'dsh-sr-events' }, (state.events[session.id] ?? []).map(event => createElement('div', { key: event.seq, className: 'dsh-sr-event' }, createElement('code', null, `${event.seq} · ${event.type}`), createElement('pre', null, event.event)))) : null))),
   ))
 }

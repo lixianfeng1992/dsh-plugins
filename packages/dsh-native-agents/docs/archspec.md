@@ -8,6 +8,8 @@ Status: implementation target for the prototype.
 
 The plugin is a pure Cordis extension. It registers LLM adapters and uses public DSH services; it does not require changes to DeepSeek Harness.
 
+The package also ships a Web client face. It preserves coordinator relay provenance in the session log while shadowing the generic context renderer so parent-to-child relay messages appear as labeled message bubbles. Other non-user context remains a disclosed context row.
+
 ## Authority and persistence
 
 There is one logical agent session: the DSH session. The DSH session id is the public continuation id used by `send_message`, the Web application, and agent lifecycle APIs.
@@ -164,6 +166,7 @@ A runtime failure evicts that runtime from the registry. A later DSH turn may co
 - Text, reasoning, usage, finish status, and replay metadata survive DSH stream projection.
 - Abort interrupts the active provider turn, and plugin disposal closes every cached runtime.
 - Existing continuable-child creation and `send_message` address the DSH child session without exposing a second session id.
+- Parent-to-child relay events remain `coordinator` sources and render as parent-agent message bubbles in the Web conversation.
 - The package passes focused tests, TypeScript checking, build, and tarball creation.
 
 ## Implementation baseline

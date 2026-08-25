@@ -93,6 +93,12 @@ importers:
       '@deepseek-ai/dsh-agent':
         specifier: link:../../../deepseek-harness/packages/core/agent
         version: link:../../../deepseek-harness/packages/core/agent
+      '@deepseek-ai/dsh-client-runtime':
+        specifier: link:../../../deepseek-harness/packages/client/runtime
+        version: link:../../../deepseek-harness/packages/client/runtime
+      '@deepseek-ai/dsh-client-ui-conversation':
+        specifier: link:../../../deepseek-harness/packages/client/ui-conversation
+        version: link:../../../deepseek-harness/packages/client/ui-conversation
       '@deepseek-ai/dsh-home-paths':
         specifier: link:../../../deepseek-harness/packages/util/home-paths
         version: link:../../../deepseek-harness/packages/util/home-paths
@@ -114,6 +120,12 @@ importers:
       '@types/node':
         specifier: 22.20.0
         version: 22.20.0
+      '@types/react':
+        specifier: ~18.3.1
+        version: 18.3.31
+      react:
+        specifier: ^18.2.0
+        version: 18.2.0
       tsdown:
         specifier: 0.22.14
         version: 0.22.14(typescript@7.0.2)

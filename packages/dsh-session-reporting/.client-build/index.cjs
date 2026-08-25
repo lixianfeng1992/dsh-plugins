@@ -239,7 +239,7 @@ function SessionReportingDrawer({ store }) {
 	}, (0, react.createElement)(ChevronRight, {
 		size: 15,
 		className: expanded === session.id ? "dsh-sr-open" : void 0
-	}), (0, react.createElement)("div", null, (0, react.createElement)("strong", null, session.id), (0, react.createElement)("small", null, `${session.canonical_remote} · ${session.event_count} events`))), expanded === session.id ? (0, react.createElement)("div", { className: "dsh-sr-events" }, (state.events[session.id] ?? []).map((event) => (0, react.createElement)("div", {
+	}), (0, react.createElement)("div", null, (0, react.createElement)("strong", null, session.title ?? "未命名会话"), (0, react.createElement)("small", null, `${session.origin === "subagent" ? "子代理 · " : ""}${session.canonical_remote} · ${session.event_count} events`), (0, react.createElement)("small", { className: "dsh-sr-id" }, session.id))), expanded === session.id ? (0, react.createElement)("div", { className: "dsh-sr-events" }, (state.events[session.id] ?? []).map((event) => (0, react.createElement)("div", {
 		key: event.seq,
 		className: "dsh-sr-event"
 	}, (0, react.createElement)("code", null, `${event.seq} · ${event.type}`), (0, react.createElement)("pre", null, event.event)))) : null)))));
