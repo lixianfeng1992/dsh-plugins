@@ -3,6 +3,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-agent'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { SessionId } from '@deepseek-ai/dsh-session'
+import type {} from '@deepseek-ai/dsh-subagent'
 import type {} from '@deepseek-ai/dsh-subprocess'
 import { settingsNamespace } from '@deepseek-ai/dsh-settings'
 import z from '@deepseek-ai/schemastery'
@@ -12,9 +13,10 @@ import { ClaudeProvider, type ClaudePermissionMode } from './claude-provider.js'
 import { CodexProvider, type CodexPermissionMode } from './codex-provider.js'
 import { NativeAgentError } from './error.js'
 import { NativeRuntimeRegistry } from './runtime-registry.js'
+import { NativeSubagentController, NativeToolHost } from './native-tools.js'
 
 export const name = 'native-agents'
-export const inject = ['agents', 'llm', 'settings', 'subprocess']
+export const inject = ['agents', 'llm', 'settings', 'subagents', 'subprocess']
 
 const SETTINGS_NAMESPACE = settingsNamespace('native-agents')
 
@@ -46,12 +48,19 @@ interface ClaudeConfig {
   disposeGraceMs?: number
 }
 
+interface NativeToolsConfig {
+  enabled?: boolean
+  subagentProvider?: string
+  maxDepth?: number
+}
+
 /** Deployment configuration for provider homes, permissions, and process release. */
 export interface Config {
   dshHome?: string
   storageRoot?: string
   codex?: CodexConfig
   claudeCode?: ClaudeConfig
+  nativeTools?: NativeToolsConfig
 }
 
 export const Config: z<Config> = z.object({
@@ -69,6 +78,11 @@ export const Config: z<Config> = z.object({
     permissionMode: z.union(['dontAsk', 'bypassPermissions'] as const).default('dontAsk'),
     disposeGraceMs: z.number().default(3_000),
   }),
+  nativeTools: z.object({
+    enabled: z.boolean().default(true),
+    subagentProvider: z.string().default('spawn'),
+    maxDepth: z.number().default(3),
+  }),
 })
 
 function grace(value: number | undefined, field: string): number {
@@ -85,6 +99,18 @@ export function apply(ctx: Context, config: Config = {}): void {
     ? join(resolveDshHome(config.dshHome), 'native-agents')
     : resolve(config.storageRoot)
   const store = new BindingStore(root)
+  const maxDepth = config.nativeTools?.maxDepth ?? 3
+  if (!Number.isSafeInteger(maxDepth) || maxDepth < 0) {
+    throw new Error('native-agents: nativeTools.maxDepth must be a non-negative safe integer')
+  }
+  const enabledRoutes = new Set<string>()
+  const toolHost = config.nativeTools?.enabled === false
+    ? undefined
+    : new NativeToolHost(new NativeSubagentController(ctx, {
+        provider: config.nativeTools?.subagentProvider ?? 'spawn',
+        maxDepth,
+        isNativeRouteEnabled: route => enabledRoutes.has(route),
+      }))
   const resolveCwd = (sessionId: string): string => {
     const cwd = ctx.agents.get(SessionId(sessionId))?.session.header.cwd
     if (cwd === undefined) {
@@ -112,7 +138,11 @@ export function apply(ctx: Context, config: Config = {}): void {
   })
 
   const providers = [codex, claudeCode].map((provider) => {
-    const registry = new NativeRuntimeRegistry(provider, store)
+    const registry = new NativeRuntimeRegistry(
+      provider,
+      store,
+      toolHost === undefined ? undefined : sessionId => toolHost.acquire(sessionId),
+    )
     const adapter = new NativeLlmAdapter({
       route: provider.route,
       provider,
@@ -154,11 +184,13 @@ export function apply(ctx: Context, config: Config = {}): void {
       entry.registration.replace([entry.provider.route])
     }
     entry.enabled = true
+    enabledRoutes.add(entry.provider.route)
   }
   const disable = async (entry: typeof providers[number]): Promise<void> => {
     if (!entry.enabled) return
     entry.registration?.replace([])
     entry.enabled = false
+    enabledRoutes.delete(entry.provider.route)
     await entry.registry.releaseAll()
   }
   const desired = (value: NativeAgentsSettings, route: string): boolean =>
@@ -167,6 +199,9 @@ export function apply(ctx: Context, config: Config = {}): void {
   for (const entry of providers) {
     if (desired(settings.get(), entry.provider.route)) enable(entry)
     ctx.effect(() => async () => { await entry.registry.closeAll() }, `native-agents: close ${entry.provider.id} runtimes`)
+  }
+  if (toolHost !== undefined) {
+    ctx.effect(() => async () => { await toolHost.close() }, 'native-agents: close native tool host')
   }
 
   let reconciliation = Promise.resolve()

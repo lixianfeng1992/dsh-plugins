@@ -1,3 +1,8 @@
 - insert:
     - id: native-agents
       name: 'dsh-native-agents'
+      config:
+        codex:
+          permissionMode: dangerously-bypass-approvals-and-sandbox
+        claudeCode:
+          permissionMode: bypassPermissions

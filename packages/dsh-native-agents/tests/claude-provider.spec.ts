@@ -62,8 +62,10 @@ describe('ClaudeProvider', () => {
   it('keeps one streaming Query resident across two turns', async () => {
     const fake = new FakeQuery()
     let prompts: AsyncIterable<SDKUserMessage> | undefined
-    const query = vi.fn((input: { prompt: string | AsyncIterable<SDKUserMessage> }) => {
+    let sdkOptions: Record<string, unknown> | undefined
+    const query = vi.fn((input: { prompt: string | AsyncIterable<SDKUserMessage>; options: Record<string, unknown> }) => {
       prompts = input.prompt as AsyncIterable<SDKUserMessage>
+      sdkOptions = input.options
       return fake as unknown as Query
     })
     const provider = new ClaudeProvider({
@@ -78,7 +80,32 @@ describe('ClaudeProvider', () => {
       dshSessionId: 'child',
       cwd: '/work',
       signal: new AbortController().signal,
+      tools: {
+        url: 'http://127.0.0.1:9876/mcp',
+        authorization: 'Bearer runtime-token',
+      },
     })
+    expect(sdkOptions).toMatchObject({
+      mcpServers: {
+        dsh: {
+          type: 'http',
+          url: 'http://127.0.0.1:9876/mcp',
+          headers: { Authorization: 'Bearer runtime-token' },
+          alwaysLoad: true,
+        },
+      },
+    })
+    const canUseTool = sdkOptions?.canUseTool as (
+      name: string,
+      input: Record<string, unknown>,
+      options: { signal: AbortSignal },
+    ) => Promise<{ behavior: string }>
+    await expect(canUseTool('mcp__dsh__create_agent', { prompt: 'task' }, {
+      signal: new AbortController().signal,
+    })).resolves.toMatchObject({ behavior: 'allow' })
+    await expect(canUseTool('Bash', { command: 'pwd' }, {
+      signal: new AbortController().signal,
+    })).resolves.toMatchObject({ behavior: 'deny' })
     const input = prompts?.[Symbol.asyncIterator]()
     expect(input).toBeDefined()
     await runtime.setModel('claude-sonnet-4-6')

@@ -3,6 +3,20 @@ import type { JsonValue } from '@deepseek-ai/dsh-session'
 
 export type NativeProviderId = string
 
+export const NATIVE_TOOL_NAMES = [
+  'create_agent',
+  'send_message',
+  'list_agents',
+  'interrupt_agent',
+  'report',
+] as const
+
+/** Runtime-scoped connection to the plugin's native MCP tool host. */
+export interface NativeToolConnection {
+  readonly url: string
+  readonly authorization: string
+}
+
 export interface NativeModel {
   readonly id: string
   readonly name: string
@@ -42,6 +56,7 @@ export interface NativeRuntimeInput {
   readonly cwd: string
   readonly model?: string
   readonly signal: AbortSignal
+  readonly tools?: NativeToolConnection
 }
 
 export interface NativeCreateRuntimeInput extends NativeRuntimeInput {}

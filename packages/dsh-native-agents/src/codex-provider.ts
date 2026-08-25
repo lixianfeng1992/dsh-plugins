@@ -138,11 +138,11 @@ export class CodexProvider implements NativeProvider {
       wire.setModel(input.model)
       if (nativeId === undefined) {
         await Promise.race([
-          wire.createThread(input.cwd, permission(this.options.permissionMode), input.model, input.signal),
+          wire.createThread(input.cwd, permission(this.options.permissionMode), input.model, input.tools, input.signal),
           exited,
         ])
       } else {
-        await Promise.race([wire.resumeThread(nativeId, input.signal), exited])
+        await Promise.race([wire.resumeThread(nativeId, input.tools, input.signal), exited])
       }
       return new CodexRuntime(wire, child)
     } catch (error: unknown) {

@@ -1,7 +1,13 @@
 import type { Readable, Writable } from 'node:stream'
 import { JsonRpcLineTransport } from '@deepseek-ai/dsh-sdk-protocol'
 import { NativeAgentError } from './error.js'
-import { AsyncEventQueue, type NativeCatalog, type NativeEvent } from './native.js'
+import {
+  AsyncEventQueue,
+  NATIVE_TOOL_NAMES,
+  type NativeCatalog,
+  type NativeEvent,
+  type NativeToolConnection,
+} from './native.js'
 import type { JsonValue } from '@deepseek-ai/dsh-session'
 
 type JsonObject = Record<string, unknown>
@@ -69,7 +75,7 @@ export class CodexWire {
       clientInfo: {
         name: 'dsh-native-agents',
         title: 'DSH Native Agents',
-        version: '0.1.0',
+        version: '0.3.1',
       },
       capabilities: { experimentalApi: true, mcpServerOpenaiFormElicitation: true },
     }, signal)
@@ -81,6 +87,7 @@ export class CodexWire {
     cwd: string,
     permission: JsonObject,
     model: string | undefined,
+    tools: NativeToolConnection | undefined,
     signal: AbortSignal,
   ): Promise<string> {
     const response = object(await this.transport.request('thread/start', {
@@ -88,6 +95,7 @@ export class CodexWire {
       ephemeral: false,
       ...permission,
       ...model === undefined ? {} : { model },
+      ...tools === undefined ? {} : { config: codexMcpConfig(tools) },
     }, signal), 'thread/start response')
     const id = text(object(response.thread, 'thread').id, 'thread id')
     this.threadId = id
@@ -116,8 +124,15 @@ export class CodexWire {
     return { models, ...defaultModel === undefined ? {} : { defaultModel } }
   }
 
-  async resumeThread(threadId: string, signal: AbortSignal): Promise<void> {
-    const response = object(await this.transport.request('thread/resume', { threadId }, signal), 'thread/resume response')
+  async resumeThread(
+    threadId: string,
+    tools: NativeToolConnection | undefined,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const response = object(await this.transport.request('thread/resume', {
+      threadId,
+      ...tools === undefined ? {} : { config: codexMcpConfig(tools) },
+    }, signal), 'thread/resume response')
     const resumed = object(response.thread, 'thread')
     const returnedId = text(resumed.id, 'thread id')
     if (returnedId !== threadId) {
@@ -311,5 +326,20 @@ export class CodexWire {
     }
     active.events.end()
     this.active = undefined
+  }
+}
+
+function codexMcpConfig(tools: NativeToolConnection): JsonObject {
+  const approvals = Object.fromEntries(NATIVE_TOOL_NAMES.map(name => [name, { approval_mode: 'approve' }]))
+  return {
+    mcp_servers: {
+      dsh: {
+        url: tools.url,
+        http_headers: { Authorization: tools.authorization },
+        enabled_tools: [...NATIVE_TOOL_NAMES],
+        default_tools_approval_mode: 'prompt',
+        tools: approvals,
+      },
+    },
   }
 }

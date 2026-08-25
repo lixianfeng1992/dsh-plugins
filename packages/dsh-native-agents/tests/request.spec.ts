@@ -32,6 +32,25 @@ const injected = (text: string): Message => createUserMessage({
   source: { kind: 'plugin', plugin: 'test', form: 'snapshot', sections: [] },
 })
 
+const settled = (text: string): Message => createUserMessage({
+  content: [{ type: 'text', text }],
+  source: {
+    kind: 'subagent-settled',
+    form: 'notice',
+    summary: 'completed',
+    senderSessionId: 'agent-1' as never,
+  },
+})
+
+const coordinator = (text: string): Message => createUserMessage({
+  content: [{ type: 'text', text }],
+  source: {
+    kind: 'coordinator',
+    form: 'relay',
+    senderSessionId: 'parent-1' as never,
+  },
+})
+
 describe('native request projection', () => {
   it('forwards only the newest user message', () => {
     const request = options([user('remember alpha'), assistant('done'), user('what word?')])
@@ -52,6 +71,21 @@ describe('native request projection', () => {
   it('allows creation only for one initial user message', () => {
     expect(initialConversationAllowed(options([user('first')]))).toBe(true)
     expect(initialConversationAllowed(options([user('first'), user('retry')]))).toBe(false)
+  })
+
+  it('forwards DSH subagent notifications after the last native response', () => {
+    const request = options([
+      user('delegate this'),
+      assistant('started'),
+      settled('child result'),
+      coordinator('continue with this constraint'),
+    ])
+
+    expect(projectNativePrompt(request)).toBe(
+      '[Subagent settled agent-1]\nchild result\n\n'
+      + '[Coordinator parent-1]\ncontinue with this constraint',
+    )
+    expect(initialConversationAllowed(request)).toBe(false)
   })
 
   it.each([

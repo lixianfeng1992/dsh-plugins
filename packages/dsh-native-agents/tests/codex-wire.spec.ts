@@ -19,6 +19,7 @@ describe('CodexWire', () => {
     const methods: string[] = []
     let turn = 0
     const turnParams: Frame[] = []
+    let threadStartParams: Frame | undefined
     let buffer = ''
     const send = (frame: Frame): void => { serverOutput.write(`${JSON.stringify(frame)}\n`) }
     clientOutput.on('data', (chunk: Buffer) => {
@@ -35,6 +36,7 @@ describe('CodexWire', () => {
         if (frame.method === 'initialize') {
           send({ jsonrpc: '2.0', id: frame.id, result: {} })
         } else if (frame.method === 'thread/start') {
+          threadStartParams = frame.params as Frame
           send({ jsonrpc: '2.0', id: frame.id, result: { thread: { id: 'thread-1' } } })
         } else if (frame.method === 'turn/start') {
           turnParams.push(frame.params as Frame)
@@ -72,7 +74,10 @@ describe('CodexWire', () => {
     wire.start()
     const signal = new AbortController().signal
     await wire.initialize(signal)
-    await wire.createThread('/work', { approvalPolicy: 'never' }, undefined, signal)
+    await wire.createThread('/work', { approvalPolicy: 'never' }, undefined, {
+      url: 'http://127.0.0.1:9876/mcp',
+      authorization: 'Bearer runtime-token',
+    }, signal)
 
     const first = await collect(wire.runTurn('first', signal))
     wire.setModel('gpt-test-codex')
@@ -85,7 +90,61 @@ describe('CodexWire', () => {
     expect(second).toContainEqual({ type: 'turn-completed', nativeTurnId: 'turn-2' })
     expect(methods.filter(method => method === 'thread/start')).toHaveLength(1)
     expect(methods.filter(method => method === 'turn/start')).toHaveLength(2)
+    expect(threadStartParams).toMatchObject({
+      config: {
+        mcp_servers: {
+          dsh: {
+            url: 'http://127.0.0.1:9876/mcp',
+            http_headers: { Authorization: 'Bearer runtime-token' },
+            enabled_tools: ['create_agent', 'send_message', 'list_agents', 'interrupt_agent', 'report'],
+            default_tools_approval_mode: 'prompt',
+            tools: {
+              create_agent: { approval_mode: 'approve' },
+              send_message: { approval_mode: 'approve' },
+              list_agents: { approval_mode: 'approve' },
+              interrupt_agent: { approval_mode: 'approve' },
+              report: { approval_mode: 'approve' },
+            },
+          },
+        },
+      },
+    })
     expect(turnParams[1]).toMatchObject({ model: 'gpt-test-codex' })
+    wire.close()
+  })
+
+  it('refreshes MCP configuration when resuming a thread', async () => {
+    const serverOutput = new PassThrough()
+    const clientOutput = new PassThrough()
+    const wire = new CodexWire(serverOutput, clientOutput)
+    let resumed: Frame | undefined
+    let buffer = ''
+    clientOutput.on('data', (chunk: Buffer) => {
+      buffer += chunk.toString('utf8')
+      const newline = buffer.indexOf('\n')
+      if (newline < 0) return
+      const frame = JSON.parse(buffer.slice(0, newline)) as Frame
+      buffer = buffer.slice(newline + 1)
+      if (frame.id === undefined) return
+      if (frame.method === 'initialize') {
+        serverOutput.write(`${JSON.stringify({ jsonrpc: '2.0', id: frame.id, result: {} })}\n`)
+      } else if (frame.method === 'thread/resume') {
+        resumed = frame.params as Frame
+        serverOutput.write(`${JSON.stringify({ jsonrpc: '2.0', id: frame.id, result: { thread: { id: 'thread-r' } } })}\n`)
+      }
+    })
+    wire.start()
+    const signal = new AbortController().signal
+    await wire.initialize(signal)
+    await wire.resumeThread('thread-r', {
+      url: 'http://127.0.0.1:4321/mcp',
+      authorization: 'Bearer fresh-token',
+    }, signal)
+
+    expect(resumed).toMatchObject({
+      threadId: 'thread-r',
+      config: { mcp_servers: { dsh: { http_headers: { Authorization: 'Bearer fresh-token' } } } },
+    })
     wire.close()
   })
 
@@ -126,7 +185,7 @@ describe('CodexWire', () => {
     wire.start()
     const setupSignal = new AbortController().signal
     await wire.initialize(setupSignal)
-    await wire.createThread('/work', { approvalPolicy: 'never' }, undefined, setupSignal)
+    await wire.createThread('/work', { approvalPolicy: 'never' }, undefined, undefined, setupSignal)
 
     const interrupted = collect(wire.runTurn('cancel me', controller.signal))
     await turnStarted

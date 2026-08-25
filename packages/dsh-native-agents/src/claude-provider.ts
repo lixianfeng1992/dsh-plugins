@@ -13,6 +13,7 @@ import { claudeCatalog } from './claude-models.js'
 import { NativeAgentError } from './error.js'
 import {
   AsyncEventQueue,
+  NATIVE_TOOL_NAMES,
   type NativeCreateRuntimeInput,
   type NativeCatalog,
   type NativeEvent,
@@ -91,6 +92,10 @@ function userMessage(prompt: string): SDKUserMessage {
     },
     parent_tool_use_id: null,
   }
+}
+
+function isDshNativeTool(toolName: string): boolean {
+  return NATIVE_TOOL_NAMES.some(name => toolName === `mcp__dsh__${name}`)
 }
 
 /** Resident Claude SDK query that accepts multiple DSH turns. */
@@ -338,15 +343,27 @@ export class ClaudeProvider implements NativeProvider {
       includePartialMessages: true,
       permissionMode: this.options.permissionMode,
       disallowedTools: ['AskUserQuestion'],
+      ...input.tools === undefined ? {} : {
+        mcpServers: {
+          dsh: {
+            type: 'http' as const,
+            url: input.tools.url,
+            headers: { Authorization: input.tools.authorization },
+            alwaysLoad: true,
+          },
+        },
+      },
       ...input.model === undefined ? {} : { model: input.model },
       ...resume === undefined ? {} : { resume },
       ...this.options.permissionMode === 'bypassPermissions'
         ? { allowDangerouslySkipPermissions: true }
         : {
-          canUseTool: () => Promise.resolve({
-            behavior: 'deny' as const,
-            message: 'This unattended native agent cannot request human approval.',
-          }),
+          canUseTool: (toolName, input) => Promise.resolve(isDshNativeTool(toolName)
+            ? { behavior: 'allow' as const, updatedInput: input }
+            : {
+                behavior: 'deny' as const,
+                message: 'This unattended native agent cannot request human approval.',
+              }),
         },
       onElicitation: () => Promise.resolve({ action: 'decline' as const }),
       spawnClaudeCodeProcess: (spawnOptions: SpawnOptions) => {

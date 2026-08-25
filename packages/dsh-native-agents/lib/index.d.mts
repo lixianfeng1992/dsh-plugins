@@ -1,8 +1,13 @@
 import "@deepseek-ai/dsh-session";
 import z from "@deepseek-ai/schemastery";
 import "@deepseek-ai/dsh-llm";
+import { Readable } from "stream";
 import "@deepseek-ai/dsh-subprocess";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import "zod";
 import { Context } from "@deepseek-ai/cordis";
+import "@modelcontextprotocol/sdk/types.js";
+import "zod/v4";
 //#region src/claude-provider.d.ts
 type ClaudePermissionMode = 'dontAsk' | 'bypassPermissions';
 //#endregion
@@ -24,12 +29,18 @@ interface ClaudeConfig {
   permissionMode?: ClaudePermissionMode;
   disposeGraceMs?: number;
 }
+interface NativeToolsConfig {
+  enabled?: boolean;
+  subagentProvider?: string;
+  maxDepth?: number;
+}
 /** Deployment configuration for provider homes, permissions, and process release. */
 interface Config {
   dshHome?: string;
   storageRoot?: string;
   codex?: CodexConfig;
   claudeCode?: ClaudeConfig;
+  nativeTools?: NativeToolsConfig;
 }
 declare const Config: z<Config>;
 /** Register the two persistent native LLM routes. */

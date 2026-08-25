@@ -5,10 +5,10 @@ import { SessionId } from "@deepseek-ai/dsh-session";
 import { settingsNamespace } from "@deepseek-ai/dsh-settings";
 import z from "@deepseek-ai/schemastery";
 import { LlmAdapter, LlmError, resolveRetryPolicy } from "@deepseek-ai/dsh-llm";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdir, open, readFile, rename } from "node:fs/promises";
 import woe, { fileURLToPath } from "url";
-import Toe, { createHash as createHash$1, randomBytes, randomUUID } from "crypto";
+import Toe, { createHash as createHash$1, randomBytes as randomBytes$1, randomUUID } from "crypto";
 import Xie, { Readable } from "stream";
 import Wie, { promisify } from "util";
 import sse from "http";
@@ -33,6 +33,10 @@ import sE from "node:process";
 import { scrubbedParentEnv } from "@deepseek-ai/dsh-subprocess";
 import { EventEmitter as EventEmitter$1 } from "node:events";
 import { JsonRpcLineTransport } from "@deepseek-ai/dsh-sdk-protocol";
+import { createServer } from "node:http";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { z as z$1 } from "zod";
 //#region src/error.ts
 /** Stable plugin failure with a model-safe diagnostic. */
 var NativeAgentError = class extends Error {
@@ -49,25 +53,61 @@ function asNativeAgentError(error, code, message) {
 }
 //#endregion
 //#region src/request.ts
-function conversationMessages(messages) {
-	return messages.filter((message) => message.role === "user" && message.source.kind === "user");
+function isNativeInput(message) {
+	return message.role === "user" && (message.source.kind === "user" || message.source.kind === "subagent-settled" || message.source.kind === "subagent-report" || message.source.kind === "coordinator");
+}
+function messagesAfterNativeResponse(options) {
+	let start = 0;
+	for (let index = options.messages.length - 1; index >= 0; index -= 1) {
+		const message = options.messages[index];
+		if (message?.role === "assistant" && "provider" in message.source && message.source.provider === options.provider) {
+			start = index + 1;
+			break;
+		}
+	}
+	return options.messages.slice(start).filter(isNativeInput);
 }
 /** Whether a missing binding may create the conversation represented by this request. */
 function initialConversationAllowed(options) {
-	return conversationMessages(options.messages).length === 1 && options.messages.every((message) => message.role === "user");
+	const inputs = messagesAfterNativeResponse(options);
+	const first = inputs[0];
+	return inputs.length === 1 && first !== void 0 && first.source.kind === "user" && options.messages.every((message) => message.role === "user");
 }
 /** Project one DSH request to the single new text turn owned by the native provider. */
 function projectNativePrompt(options) {
 	if (options.sessionId === void 0 || options.sessionId.length === 0) throw new NativeAgentError("NATIVE_SESSION_ID_REQUIRED", "native-agents: request sessionId is required");
 	if (options.purpose !== void 0) throw new NativeAgentError("NATIVE_AUXILIARY_UNSUPPORTED", "native-agents: auxiliary model requests are unsupported");
-	const latest = conversationMessages(options.messages).at(-1);
-	if (latest === void 0) throw new NativeAgentError("NATIVE_PROMPT_INVALID", "native-agents: request must contain a user-authored message");
-	const texts = [];
-	for (const block of latest.content) {
-		if (block.type !== "text") throw new NativeAgentError("NATIVE_PROMPT_INVALID", "native-agents: native prompts support text blocks only");
-		texts.push(block.text);
-	}
-	const prompt = texts.join("\n");
+	const inputs = messagesAfterNativeResponse(options);
+	if (inputs.length === 0) throw new NativeAgentError("NATIVE_PROMPT_INVALID", "native-agents: request must contain new user or subagent input");
+	const projected = inputs.map((message) => {
+		const texts = [];
+		for (const block of message.content) {
+			if (block.type !== "text") throw new NativeAgentError("NATIVE_PROMPT_INVALID", "native-agents: native prompts support text blocks only");
+			texts.push(block.text);
+		}
+		const text = texts.join("\n");
+		switch (message.source.kind) {
+			case "user": return {
+				label: "User",
+				text
+			};
+			case "coordinator": return {
+				label: `Coordinator ${message.source.senderSessionId}`,
+				text
+			};
+			case "subagent-report": return {
+				label: `Subagent report ${message.source.senderSessionId}`,
+				text
+			};
+			case "subagent-settled": return {
+				label: `Subagent settled ${message.source.senderSessionId}`,
+				text
+			};
+			default: throw new NativeAgentError("NATIVE_PROMPT_INVALID", "native-agents: unsupported message source");
+		}
+	});
+	const first = projected[0];
+	const prompt = projected.length === 1 && first?.label === "User" ? first.text : projected.map((message) => `[${message.label}]\n${message.text}`).join("\n\n");
 	if (prompt.trim().length === 0) throw new NativeAgentError("NATIVE_PROMPT_INVALID", "native-agents: native prompt must not be empty");
 	return prompt;
 }
@@ -32744,7 +32784,7 @@ var C5 = /* @__PURE__ */ new Set([
 	"EFBIG"
 ]);
 async function zI(e, t, r) {
-	let n = `${e}.tmp.${randomBytes(4).toString("hex")}`;
+	let n = `${e}.tmp.${randomBytes$1(4).toString("hex")}`;
 	try {
 		await writeFile(n, t, {
 			encoding: "utf8",
@@ -32983,7 +33023,7 @@ lt(Or, {
 	bigint: () => dJ,
 	array: () => vJ,
 	any: () => _J,
-	addIssueToContext: () => z$1,
+	addIssueToContext: () => z$2,
 	ZodVoid: () => Xu,
 	ZodUnknown: () => Lo,
 	ZodUnion: () => Sa,
@@ -33303,7 +33343,7 @@ var Ju = (e) => {
 	};
 };
 var F5 = [];
-function z$1(e, t) {
+function z$2(e, t) {
 	let r = ga(), n = Ju({
 		issueData: t,
 		data: e.data,
@@ -33732,7 +33772,7 @@ var rn = class rn extends fe {
 		if (this._def.coerce) e.data = String(e.data);
 		if (this._getType(e) !== U.string) {
 			let o = this._getOrReturnCtx(e);
-			return z$1(o, {
+			return z$2(o, {
 				code: I.invalid_type,
 				expected: U.string,
 				received: o.parsedType
@@ -33740,7 +33780,7 @@ var rn = class rn extends fe {
 		}
 		let r = new Dt(), n = void 0;
 		for (let o of this._def.checks) if (o.kind === "min") {
-			if (e.data.length < o.value) n = this._getOrReturnCtx(e, n), z$1(n, {
+			if (e.data.length < o.value) n = this._getOrReturnCtx(e, n), z$2(n, {
 				code: I.too_small,
 				minimum: o.value,
 				type: "string",
@@ -33749,7 +33789,7 @@ var rn = class rn extends fe {
 				message: o.message
 			}), r.dirty();
 		} else if (o.kind === "max") {
-			if (e.data.length > o.value) n = this._getOrReturnCtx(e, n), z$1(n, {
+			if (e.data.length > o.value) n = this._getOrReturnCtx(e, n), z$2(n, {
 				code: I.too_big,
 				maximum: o.value,
 				type: "string",
@@ -33760,7 +33800,7 @@ var rn = class rn extends fe {
 		} else if (o.kind === "length") {
 			let i = e.data.length > o.value, s = e.data.length < o.value;
 			if (i || s) {
-				if (n = this._getOrReturnCtx(e, n), i) z$1(n, {
+				if (n = this._getOrReturnCtx(e, n), i) z$2(n, {
 					code: I.too_big,
 					maximum: o.value,
 					type: "string",
@@ -33768,7 +33808,7 @@ var rn = class rn extends fe {
 					exact: !0,
 					message: o.message
 				});
-				else if (s) z$1(n, {
+				else if (s) z$2(n, {
 					code: I.too_small,
 					minimum: o.value,
 					type: "string",
@@ -33779,44 +33819,44 @@ var rn = class rn extends fe {
 				r.dirty();
 			}
 		} else if (o.kind === "email") {
-			if (!K5.test(e.data)) n = this._getOrReturnCtx(e, n), z$1(n, {
+			if (!K5.test(e.data)) n = this._getOrReturnCtx(e, n), z$2(n, {
 				validation: "email",
 				code: I.invalid_string,
 				message: o.message
 			}), r.dirty();
 		} else if (o.kind === "emoji") {
 			if (!LS) LS = new RegExp(Z5, "u");
-			if (!LS.test(e.data)) n = this._getOrReturnCtx(e, n), z$1(n, {
+			if (!LS.test(e.data)) n = this._getOrReturnCtx(e, n), z$2(n, {
 				validation: "emoji",
 				code: I.invalid_string,
 				message: o.message
 			}), r.dirty();
 		} else if (o.kind === "uuid") {
-			if (!q5.test(e.data)) n = this._getOrReturnCtx(e, n), z$1(n, {
+			if (!q5.test(e.data)) n = this._getOrReturnCtx(e, n), z$2(n, {
 				validation: "uuid",
 				code: I.invalid_string,
 				message: o.message
 			}), r.dirty();
 		} else if (o.kind === "nanoid") {
-			if (!G5.test(e.data)) n = this._getOrReturnCtx(e, n), z$1(n, {
+			if (!G5.test(e.data)) n = this._getOrReturnCtx(e, n), z$2(n, {
 				validation: "nanoid",
 				code: I.invalid_string,
 				message: o.message
 			}), r.dirty();
 		} else if (o.kind === "cuid") {
-			if (!z5.test(e.data)) n = this._getOrReturnCtx(e, n), z$1(n, {
+			if (!z5.test(e.data)) n = this._getOrReturnCtx(e, n), z$2(n, {
 				validation: "cuid",
 				code: I.invalid_string,
 				message: o.message
 			}), r.dirty();
 		} else if (o.kind === "cuid2") {
-			if (!B5.test(e.data)) n = this._getOrReturnCtx(e, n), z$1(n, {
+			if (!B5.test(e.data)) n = this._getOrReturnCtx(e, n), z$2(n, {
 				validation: "cuid2",
 				code: I.invalid_string,
 				message: o.message
 			}), r.dirty();
 		} else if (o.kind === "ulid") {
-			if (!H5.test(e.data)) n = this._getOrReturnCtx(e, n), z$1(n, {
+			if (!H5.test(e.data)) n = this._getOrReturnCtx(e, n), z$2(n, {
 				validation: "ulid",
 				code: I.invalid_string,
 				message: o.message
@@ -33824,21 +33864,21 @@ var rn = class rn extends fe {
 		} else if (o.kind === "url") try {
 			new URL(e.data);
 		} catch {
-			n = this._getOrReturnCtx(e, n), z$1(n, {
+			n = this._getOrReturnCtx(e, n), z$2(n, {
 				validation: "url",
 				code: I.invalid_string,
 				message: o.message
 			}), r.dirty();
 		}
 		else if (o.kind === "regex") {
-			if (o.regex.lastIndex = 0, !o.regex.test(e.data)) n = this._getOrReturnCtx(e, n), z$1(n, {
+			if (o.regex.lastIndex = 0, !o.regex.test(e.data)) n = this._getOrReturnCtx(e, n), z$2(n, {
 				validation: "regex",
 				code: I.invalid_string,
 				message: o.message
 			}), r.dirty();
 		} else if (o.kind === "trim") e.data = e.data.trim();
 		else if (o.kind === "includes") {
-			if (!e.data.includes(o.value, o.position)) n = this._getOrReturnCtx(e, n), z$1(n, {
+			if (!e.data.includes(o.value, o.position)) n = this._getOrReturnCtx(e, n), z$2(n, {
 				code: I.invalid_string,
 				validation: {
 					includes: o.value,
@@ -33849,67 +33889,67 @@ var rn = class rn extends fe {
 		} else if (o.kind === "toLowerCase") e.data = e.data.toLowerCase();
 		else if (o.kind === "toUpperCase") e.data = e.data.toUpperCase();
 		else if (o.kind === "startsWith") {
-			if (!e.data.startsWith(o.value)) n = this._getOrReturnCtx(e, n), z$1(n, {
+			if (!e.data.startsWith(o.value)) n = this._getOrReturnCtx(e, n), z$2(n, {
 				code: I.invalid_string,
 				validation: { startsWith: o.value },
 				message: o.message
 			}), r.dirty();
 		} else if (o.kind === "endsWith") {
-			if (!e.data.endsWith(o.value)) n = this._getOrReturnCtx(e, n), z$1(n, {
+			if (!e.data.endsWith(o.value)) n = this._getOrReturnCtx(e, n), z$2(n, {
 				code: I.invalid_string,
 				validation: { endsWith: o.value },
 				message: o.message
 			}), r.dirty();
 		} else if (o.kind === "datetime") {
-			if (!XI(o).test(e.data)) n = this._getOrReturnCtx(e, n), z$1(n, {
+			if (!XI(o).test(e.data)) n = this._getOrReturnCtx(e, n), z$2(n, {
 				code: I.invalid_string,
 				validation: "datetime",
 				message: o.message
 			}), r.dirty();
 		} else if (o.kind === "date") {
-			if (!rJ.test(e.data)) n = this._getOrReturnCtx(e, n), z$1(n, {
+			if (!rJ.test(e.data)) n = this._getOrReturnCtx(e, n), z$2(n, {
 				code: I.invalid_string,
 				validation: "date",
 				message: o.message
 			}), r.dirty();
 		} else if (o.kind === "time") {
-			if (!nJ(o).test(e.data)) n = this._getOrReturnCtx(e, n), z$1(n, {
+			if (!nJ(o).test(e.data)) n = this._getOrReturnCtx(e, n), z$2(n, {
 				code: I.invalid_string,
 				validation: "time",
 				message: o.message
 			}), r.dirty();
 		} else if (o.kind === "duration") {
-			if (!V5.test(e.data)) n = this._getOrReturnCtx(e, n), z$1(n, {
+			if (!V5.test(e.data)) n = this._getOrReturnCtx(e, n), z$2(n, {
 				validation: "duration",
 				code: I.invalid_string,
 				message: o.message
 			}), r.dirty();
 		} else if (o.kind === "ip") {
-			if (!oJ(e.data, o.version)) n = this._getOrReturnCtx(e, n), z$1(n, {
+			if (!oJ(e.data, o.version)) n = this._getOrReturnCtx(e, n), z$2(n, {
 				validation: "ip",
 				code: I.invalid_string,
 				message: o.message
 			}), r.dirty();
 		} else if (o.kind === "jwt") {
-			if (!iJ(e.data, o.alg)) n = this._getOrReturnCtx(e, n), z$1(n, {
+			if (!iJ(e.data, o.alg)) n = this._getOrReturnCtx(e, n), z$2(n, {
 				validation: "jwt",
 				code: I.invalid_string,
 				message: o.message
 			}), r.dirty();
 		} else if (o.kind === "cidr") {
-			if (!sJ(e.data, o.version)) n = this._getOrReturnCtx(e, n), z$1(n, {
+			if (!sJ(e.data, o.version)) n = this._getOrReturnCtx(e, n), z$2(n, {
 				validation: "cidr",
 				code: I.invalid_string,
 				message: o.message
 			}), r.dirty();
 		} else if (o.kind === "base64") {
-			if (!eJ.test(e.data)) n = this._getOrReturnCtx(e, n), z$1(n, {
+			if (!eJ.test(e.data)) n = this._getOrReturnCtx(e, n), z$2(n, {
 				validation: "base64",
 				code: I.invalid_string,
 				message: o.message
 			}), r.dirty();
 		} else if (o.kind === "base64url") {
-			if (!tJ.test(e.data)) n = this._getOrReturnCtx(e, n), z$1(n, {
+			if (!tJ.test(e.data)) n = this._getOrReturnCtx(e, n), z$2(n, {
 				validation: "base64url",
 				code: I.invalid_string,
 				message: o.message
@@ -34204,7 +34244,7 @@ var No = class No extends fe {
 		if (this._def.coerce) e.data = Number(e.data);
 		if (this._getType(e) !== U.number) {
 			let o = this._getOrReturnCtx(e);
-			return z$1(o, {
+			return z$2(o, {
 				code: I.invalid_type,
 				expected: U.number,
 				received: o.parsedType
@@ -34212,14 +34252,14 @@ var No = class No extends fe {
 		}
 		let r = void 0, n = new Dt();
 		for (let o of this._def.checks) if (o.kind === "int") {
-			if (!_e.isInteger(e.data)) r = this._getOrReturnCtx(e, r), z$1(r, {
+			if (!_e.isInteger(e.data)) r = this._getOrReturnCtx(e, r), z$2(r, {
 				code: I.invalid_type,
 				expected: "integer",
 				received: "float",
 				message: o.message
 			}), n.dirty();
 		} else if (o.kind === "min") {
-			if (o.inclusive ? e.data < o.value : e.data <= o.value) r = this._getOrReturnCtx(e, r), z$1(r, {
+			if (o.inclusive ? e.data < o.value : e.data <= o.value) r = this._getOrReturnCtx(e, r), z$2(r, {
 				code: I.too_small,
 				minimum: o.value,
 				type: "number",
@@ -34228,7 +34268,7 @@ var No = class No extends fe {
 				message: o.message
 			}), n.dirty();
 		} else if (o.kind === "max") {
-			if (o.inclusive ? e.data > o.value : e.data >= o.value) r = this._getOrReturnCtx(e, r), z$1(r, {
+			if (o.inclusive ? e.data > o.value : e.data >= o.value) r = this._getOrReturnCtx(e, r), z$2(r, {
 				code: I.too_big,
 				maximum: o.value,
 				type: "number",
@@ -34237,13 +34277,13 @@ var No = class No extends fe {
 				message: o.message
 			}), n.dirty();
 		} else if (o.kind === "multipleOf") {
-			if (aJ(e.data, o.value) !== 0) r = this._getOrReturnCtx(e, r), z$1(r, {
+			if (aJ(e.data, o.value) !== 0) r = this._getOrReturnCtx(e, r), z$2(r, {
 				code: I.not_multiple_of,
 				multipleOf: o.value,
 				message: o.message
 			}), n.dirty();
 		} else if (o.kind === "finite") {
-			if (!Number.isFinite(e.data)) r = this._getOrReturnCtx(e, r), z$1(r, {
+			if (!Number.isFinite(e.data)) r = this._getOrReturnCtx(e, r), z$2(r, {
 				code: I.not_finite,
 				message: o.message
 			}), n.dirty();
@@ -34394,7 +34434,7 @@ var Mo = class Mo extends fe {
 		if (this._getType(e) !== U.bigint) return this._getInvalidInput(e);
 		let r = void 0, n = new Dt();
 		for (let o of this._def.checks) if (o.kind === "min") {
-			if (o.inclusive ? e.data < o.value : e.data <= o.value) r = this._getOrReturnCtx(e, r), z$1(r, {
+			if (o.inclusive ? e.data < o.value : e.data <= o.value) r = this._getOrReturnCtx(e, r), z$2(r, {
 				code: I.too_small,
 				type: "bigint",
 				minimum: o.value,
@@ -34402,7 +34442,7 @@ var Mo = class Mo extends fe {
 				message: o.message
 			}), n.dirty();
 		} else if (o.kind === "max") {
-			if (o.inclusive ? e.data > o.value : e.data >= o.value) r = this._getOrReturnCtx(e, r), z$1(r, {
+			if (o.inclusive ? e.data > o.value : e.data >= o.value) r = this._getOrReturnCtx(e, r), z$2(r, {
 				code: I.too_big,
 				type: "bigint",
 				maximum: o.value,
@@ -34410,7 +34450,7 @@ var Mo = class Mo extends fe {
 				message: o.message
 			}), n.dirty();
 		} else if (o.kind === "multipleOf") {
-			if (e.data % o.value !== BigInt(0)) r = this._getOrReturnCtx(e, r), z$1(r, {
+			if (e.data % o.value !== BigInt(0)) r = this._getOrReturnCtx(e, r), z$2(r, {
 				code: I.not_multiple_of,
 				multipleOf: o.value,
 				message: o.message
@@ -34423,7 +34463,7 @@ var Mo = class Mo extends fe {
 	}
 	_getInvalidInput(e) {
 		let t = this._getOrReturnCtx(e);
-		return z$1(t, {
+		return z$2(t, {
 			code: I.invalid_type,
 			expected: U.bigint,
 			received: t.parsedType
@@ -34523,7 +34563,7 @@ var ba = class extends fe {
 		if (this._def.coerce) e.data = Boolean(e.data);
 		if (this._getType(e) !== U.boolean) {
 			let r = this._getOrReturnCtx(e);
-			return z$1(r, {
+			return z$2(r, {
 				code: I.invalid_type,
 				expected: U.boolean,
 				received: r.parsedType
@@ -34542,16 +34582,16 @@ var ji = class ji extends fe {
 		if (this._def.coerce) e.data = new Date(e.data);
 		if (this._getType(e) !== U.date) {
 			let o = this._getOrReturnCtx(e);
-			return z$1(o, {
+			return z$2(o, {
 				code: I.invalid_type,
 				expected: U.date,
 				received: o.parsedType
 			}), ee;
 		}
-		if (Number.isNaN(e.data.getTime())) return z$1(this._getOrReturnCtx(e), { code: I.invalid_date }), ee;
+		if (Number.isNaN(e.data.getTime())) return z$2(this._getOrReturnCtx(e), { code: I.invalid_date }), ee;
 		let r = new Dt(), n = void 0;
 		for (let o of this._def.checks) if (o.kind === "min") {
-			if (e.data.getTime() < o.value) n = this._getOrReturnCtx(e, n), z$1(n, {
+			if (e.data.getTime() < o.value) n = this._getOrReturnCtx(e, n), z$2(n, {
 				code: I.too_small,
 				message: o.message,
 				inclusive: !0,
@@ -34560,7 +34600,7 @@ var ji = class ji extends fe {
 				type: "date"
 			}), r.dirty();
 		} else if (o.kind === "max") {
-			if (e.data.getTime() > o.value) n = this._getOrReturnCtx(e, n), z$1(n, {
+			if (e.data.getTime() > o.value) n = this._getOrReturnCtx(e, n), z$2(n, {
 				code: I.too_big,
 				message: o.message,
 				inclusive: !0,
@@ -34619,7 +34659,7 @@ var Yu = class extends fe {
 	_parse(e) {
 		if (this._getType(e) !== U.symbol) {
 			let r = this._getOrReturnCtx(e);
-			return z$1(r, {
+			return z$2(r, {
 				code: I.invalid_type,
 				expected: U.symbol,
 				received: r.parsedType
@@ -34636,7 +34676,7 @@ var xa = class extends fe {
 	_parse(e) {
 		if (this._getType(e) !== U.undefined) {
 			let r = this._getOrReturnCtx(e);
-			return z$1(r, {
+			return z$2(r, {
 				code: I.invalid_type,
 				expected: U.undefined,
 				received: r.parsedType
@@ -34653,7 +34693,7 @@ var va = class extends fe {
 	_parse(e) {
 		if (this._getType(e) !== U.null) {
 			let r = this._getOrReturnCtx(e);
-			return z$1(r, {
+			return z$2(r, {
 				code: I.invalid_type,
 				expected: U.null,
 				received: r.parsedType
@@ -34695,7 +34735,7 @@ Lo.create = (e) => new Lo({
 var Rn = class extends fe {
 	_parse(e) {
 		let t = this._getOrReturnCtx(e);
-		return z$1(t, {
+		return z$2(t, {
 			code: I.invalid_type,
 			expected: U.never,
 			received: t.parsedType
@@ -34710,7 +34750,7 @@ var Xu = class extends fe {
 	_parse(e) {
 		if (this._getType(e) !== U.undefined) {
 			let r = this._getOrReturnCtx(e);
-			return z$1(r, {
+			return z$2(r, {
 				code: I.invalid_type,
 				expected: U.void,
 				received: r.parsedType
@@ -34726,14 +34766,14 @@ Xu.create = (e) => new Xu({
 var nn = class nn extends fe {
 	_parse(e) {
 		let { ctx: t, status: r } = this._processInputParams(e), n = this._def;
-		if (t.parsedType !== U.array) return z$1(t, {
+		if (t.parsedType !== U.array) return z$2(t, {
 			code: I.invalid_type,
 			expected: U.array,
 			received: t.parsedType
 		}), ee;
 		if (n.exactLength !== null) {
 			let i = t.data.length > n.exactLength.value, s = t.data.length < n.exactLength.value;
-			if (i || s) z$1(t, {
+			if (i || s) z$2(t, {
 				code: i ? I.too_big : I.too_small,
 				minimum: s ? n.exactLength.value : void 0,
 				maximum: i ? n.exactLength.value : void 0,
@@ -34744,7 +34784,7 @@ var nn = class nn extends fe {
 			}), r.dirty();
 		}
 		if (n.minLength !== null) {
-			if (t.data.length < n.minLength.value) z$1(t, {
+			if (t.data.length < n.minLength.value) z$2(t, {
 				code: I.too_small,
 				minimum: n.minLength.value,
 				type: "array",
@@ -34754,7 +34794,7 @@ var nn = class nn extends fe {
 			}), r.dirty();
 		}
 		if (n.maxLength !== null) {
-			if (t.data.length > n.maxLength.value) z$1(t, {
+			if (t.data.length > n.maxLength.value) z$2(t, {
 				code: I.too_big,
 				maximum: n.maxLength.value,
 				type: "array",
@@ -34845,7 +34885,7 @@ var et = class et extends fe {
 	_parse(e) {
 		if (this._getType(e) !== U.object) {
 			let c = this._getOrReturnCtx(e);
-			return z$1(c, {
+			return z$2(c, {
 				code: I.invalid_type,
 				expected: U.object,
 				received: c.parsedType
@@ -34880,7 +34920,7 @@ var et = class et extends fe {
 				}
 			});
 			else if (c === "strict") {
-				if (s.length > 0) z$1(n, {
+				if (s.length > 0) z$2(n, {
 					code: I.unrecognized_keys,
 					keys: s
 				}), r.dirty();
@@ -35045,7 +35085,7 @@ var Sa = class extends fe {
 			for (let s of o) if (s.result.status === "valid") return s.result;
 			for (let s of o) if (s.result.status === "dirty") return t.common.issues.push(...s.ctx.common.issues), s.result;
 			let i = o.map((s) => new ur(s.ctx.common.issues));
-			return z$1(t, {
+			return z$2(t, {
 				code: I.invalid_union,
 				unionErrors: i
 			}), ee;
@@ -35092,7 +35132,7 @@ var Sa = class extends fe {
 			}
 			if (o) return t.common.issues.push(...o.ctx.common.issues), o.result;
 			let s = i.map((a) => new ur(a));
-			return z$1(t, {
+			return z$2(t, {
 				code: I.invalid_union,
 				unionErrors: s
 			}), ee;
@@ -35126,13 +35166,13 @@ var eo = (e) => {
 var Rg = class Rg extends fe {
 	_parse(e) {
 		let { ctx: t } = this._processInputParams(e);
-		if (t.parsedType !== U.object) return z$1(t, {
+		if (t.parsedType !== U.object) return z$2(t, {
 			code: I.invalid_type,
 			expected: U.object,
 			received: t.parsedType
 		}), ee;
 		let r = this.discriminator, n = t.data[r], o = this.optionsMap.get(n);
-		if (!o) return z$1(t, {
+		if (!o) return z$2(t, {
 			code: I.invalid_union_discriminator,
 			options: Array.from(this.optionsMap.keys()),
 			path: [r]
@@ -35219,7 +35259,7 @@ var Ea = class extends fe {
 		let { status: t, ctx: r } = this._processInputParams(e), n = (o, i) => {
 			if (Og(o) || Og(i)) return ee;
 			let s = NS(o.value, i.value);
-			if (!s.valid) return z$1(r, { code: I.invalid_intersection_types }), ee;
+			if (!s.valid) return z$2(r, { code: I.invalid_intersection_types }), ee;
 			if (Cg(o) || Cg(i)) t.dirty();
 			return {
 				status: t.value,
@@ -35255,19 +35295,19 @@ Ea.create = (e, t, r) => new Ea({
 var In = class In extends fe {
 	_parse(e) {
 		let { status: t, ctx: r } = this._processInputParams(e);
-		if (r.parsedType !== U.array) return z$1(r, {
+		if (r.parsedType !== U.array) return z$2(r, {
 			code: I.invalid_type,
 			expected: U.array,
 			received: r.parsedType
 		}), ee;
-		if (r.data.length < this._def.items.length) return z$1(r, {
+		if (r.data.length < this._def.items.length) return z$2(r, {
 			code: I.too_small,
 			minimum: this._def.items.length,
 			inclusive: !0,
 			exact: !1,
 			type: "array"
 		}), ee;
-		if (!this._def.rest && r.data.length > this._def.items.length) z$1(r, {
+		if (!this._def.rest && r.data.length > this._def.items.length) z$2(r, {
 			code: I.too_big,
 			maximum: this._def.items.length,
 			inclusive: !0,
@@ -35310,7 +35350,7 @@ var Qu = class Qu extends fe {
 	}
 	_parse(e) {
 		let { status: t, ctx: r } = this._processInputParams(e);
-		if (r.parsedType !== U.object) return z$1(r, {
+		if (r.parsedType !== U.object) return z$2(r, {
 			code: I.invalid_type,
 			expected: U.object,
 			received: r.parsedType
@@ -35351,7 +35391,7 @@ var ep = class extends fe {
 	}
 	_parse(e) {
 		let { status: t, ctx: r } = this._processInputParams(e);
-		if (r.parsedType !== U.map) return z$1(r, {
+		if (r.parsedType !== U.map) return z$2(r, {
 			code: I.invalid_type,
 			expected: U.map,
 			received: r.parsedType
@@ -35398,14 +35438,14 @@ ep.create = (e, t, r) => new ep({
 var zi = class zi extends fe {
 	_parse(e) {
 		let { status: t, ctx: r } = this._processInputParams(e);
-		if (r.parsedType !== U.set) return z$1(r, {
+		if (r.parsedType !== U.set) return z$2(r, {
 			code: I.invalid_type,
 			expected: U.set,
 			received: r.parsedType
 		}), ee;
 		let n = this._def;
 		if (n.minSize !== null) {
-			if (r.data.size < n.minSize.value) z$1(r, {
+			if (r.data.size < n.minSize.value) z$2(r, {
 				code: I.too_small,
 				minimum: n.minSize.value,
 				type: "set",
@@ -35415,7 +35455,7 @@ var zi = class zi extends fe {
 			}), t.dirty();
 		}
 		if (n.maxSize !== null) {
-			if (r.data.size > n.maxSize.value) z$1(r, {
+			if (r.data.size > n.maxSize.value) z$2(r, {
 				code: I.too_big,
 				maximum: n.maxSize.value,
 				type: "set",
@@ -35480,7 +35520,7 @@ var ya = class ya extends fe {
 	}
 	_parse(e) {
 		let { ctx: t } = this._processInputParams(e);
-		if (t.parsedType !== U.function) return z$1(t, {
+		if (t.parsedType !== U.function) return z$2(t, {
 			code: I.invalid_type,
 			expected: U.function,
 			received: t.parsedType
@@ -35594,7 +35634,7 @@ var Ta = class extends fe {
 	_parse(e) {
 		if (e.data !== this._def.value) {
 			let t = this._getOrReturnCtx(e);
-			return z$1(t, {
+			return z$2(t, {
 				received: t.data,
 				code: I.invalid_literal,
 				expected: this._def.value
@@ -35625,7 +35665,7 @@ var Uo = class Uo extends fe {
 	_parse(e) {
 		if (typeof e.data !== "string") {
 			let t = this._getOrReturnCtx(e), r = this._def.values;
-			return z$1(t, {
+			return z$2(t, {
 				expected: _e.joinValues(r),
 				received: t.parsedType,
 				code: I.invalid_type
@@ -35634,7 +35674,7 @@ var Uo = class Uo extends fe {
 		if (!this._cache) this._cache = new Set(this._def.values);
 		if (!this._cache.has(e.data)) {
 			let t = this._getOrReturnCtx(e), r = this._def.values;
-			return z$1(t, {
+			return z$2(t, {
 				received: t.data,
 				code: I.invalid_enum_value,
 				options: r
@@ -35679,7 +35719,7 @@ var Aa = class extends fe {
 		let t = _e.getValidEnumValues(this._def.values), r = this._getOrReturnCtx(e);
 		if (r.parsedType !== U.string && r.parsedType !== U.number) {
 			let n = _e.objectValues(t);
-			return z$1(r, {
+			return z$2(r, {
 				expected: _e.joinValues(n),
 				received: r.parsedType,
 				code: I.invalid_type
@@ -35688,7 +35728,7 @@ var Aa = class extends fe {
 		if (!this._cache) this._cache = new Set(_e.getValidEnumValues(this._def.values));
 		if (!this._cache.has(e.data)) {
 			let n = _e.objectValues(t);
-			return z$1(r, {
+			return z$2(r, {
 				received: r.data,
 				code: I.invalid_enum_value,
 				options: n
@@ -35711,7 +35751,7 @@ var Bi = class extends fe {
 	}
 	_parse(e) {
 		let { ctx: t } = this._processInputParams(e);
-		if (t.parsedType !== U.promise && t.common.async === !1) return z$1(t, {
+		if (t.parsedType !== U.promise && t.common.async === !1) return z$2(t, {
 			code: I.invalid_type,
 			expected: U.promise,
 			received: t.parsedType
@@ -35737,7 +35777,7 @@ var sn = class extends fe {
 	_parse(e) {
 		let { status: t, ctx: r } = this._processInputParams(e), n = this._def.effect || null, o = {
 			addIssue: (i) => {
-				if (z$1(r, i), i.fatal) t.abort();
+				if (z$2(r, i), i.fatal) t.abort();
 				else t.dirty();
 			},
 			get path() {
@@ -35939,7 +35979,7 @@ var tp = class extends fe {
 	_parse(e) {
 		if (this._getType(e) !== U.nan) {
 			let r = this._getOrReturnCtx(e);
-			return z$1(r, {
+			return z$2(r, {
 				code: I.invalid_type,
 				expected: U.nan,
 				received: r.parsedType
@@ -43834,6 +43874,13 @@ async function claudeCatalog(version, configDir) {
 }
 //#endregion
 //#region src/native.ts
+const NATIVE_TOOL_NAMES = [
+	"create_agent",
+	"send_message",
+	"list_agents",
+	"interrupt_agent",
+	"report"
+];
 /** Single-consumer async event queue used by resident provider protocols. */
 var AsyncEventQueue = class {
 	values = [];
@@ -43930,6 +43977,9 @@ function userMessage(prompt) {
 		},
 		parent_tool_use_id: null
 	};
+}
+function isDshNativeTool(toolName) {
+	return NATIVE_TOOL_NAMES.some((name) => toolName === `mcp__dsh__${name}`);
 }
 /** Resident Claude SDK query that accepts multiple DSH turns. */
 var ClaudeRuntime = class {
@@ -44173,9 +44223,18 @@ var ClaudeProvider = class {
 			includePartialMessages: true,
 			permissionMode: this.options.permissionMode,
 			disallowedTools: ["AskUserQuestion"],
+			...input.tools === void 0 ? {} : { mcpServers: { dsh: {
+				type: "http",
+				url: input.tools.url,
+				headers: { Authorization: input.tools.authorization },
+				alwaysLoad: true
+			} } },
 			...input.model === void 0 ? {} : { model: input.model },
 			...resume === void 0 ? {} : { resume },
-			...this.options.permissionMode === "bypassPermissions" ? { allowDangerouslySkipPermissions: true } : { canUseTool: () => Promise.resolve({
+			...this.options.permissionMode === "bypassPermissions" ? { allowDangerouslySkipPermissions: true } : { canUseTool: (toolName, input) => Promise.resolve(isDshNativeTool(toolName) ? {
+				behavior: "allow",
+				updatedInput: input
+			} : {
 				behavior: "deny",
 				message: "This unattended native agent cannot request human approval."
 			}) },
@@ -44235,7 +44294,7 @@ var CodexWire = class {
 			clientInfo: {
 				name: "dsh-native-agents",
 				title: "DSH Native Agents",
-				version: "0.1.0"
+				version: "0.3.1"
 			},
 			capabilities: {
 				experimentalApi: true,
@@ -44245,12 +44304,13 @@ var CodexWire = class {
 		this.transport.notify("initialized", {});
 		await this.transport.flush();
 	}
-	async createThread(cwd, permission, model, signal) {
+	async createThread(cwd, permission, model, tools, signal) {
 		const id = text(object(object(await this.transport.request("thread/start", {
 			cwd,
 			ephemeral: false,
 			...permission,
-			...model === void 0 ? {} : { model }
+			...model === void 0 ? {} : { model },
+			...tools === void 0 ? {} : { config: codexMcpConfig(tools) }
 		}, signal), "thread/start response").thread, "thread").id, "thread id");
 		this.threadId = id;
 		this.model = model;
@@ -44276,8 +44336,11 @@ var CodexWire = class {
 			...defaultModel === void 0 ? {} : { defaultModel }
 		};
 	}
-	async resumeThread(threadId, signal) {
-		if (text(object(object(await this.transport.request("thread/resume", { threadId }, signal), "thread/resume response").thread, "thread").id, "thread id") !== threadId) throw new NativeAgentError("NATIVE_BINDING_CORRUPT", "native-agents: Codex resumed an unexpected thread");
+	async resumeThread(threadId, tools, signal) {
+		if (text(object(object(await this.transport.request("thread/resume", {
+			threadId,
+			...tools === void 0 ? {} : { config: codexMcpConfig(tools) }
+		}, signal), "thread/resume response").thread, "thread").id, "thread id") !== threadId) throw new NativeAgentError("NATIVE_BINDING_CORRUPT", "native-agents: Codex resumed an unexpected thread");
 		this.threadId = threadId;
 	}
 	setModel(model) {
@@ -44467,6 +44530,16 @@ var CodexWire = class {
 		this.active = void 0;
 	}
 };
+function codexMcpConfig(tools) {
+	const approvals = Object.fromEntries(NATIVE_TOOL_NAMES.map((name) => [name, { approval_mode: "approve" }]));
+	return { mcp_servers: { dsh: {
+		url: tools.url,
+		http_headers: { Authorization: tools.authorization },
+		enabled_tools: [...NATIVE_TOOL_NAMES],
+		default_tools_approval_mode: "prompt",
+		tools: approvals
+	} } };
+}
 //#endregion
 //#region src/codex-provider.ts
 function permission(mode) {
@@ -44561,8 +44634,8 @@ var CodexProvider = class {
 		});
 		try {
 			wire.setModel(input.model);
-			if (nativeId === void 0) await Promise.race([wire.createThread(input.cwd, permission(this.options.permissionMode), input.model, input.signal), exited]);
-			else await Promise.race([wire.resumeThread(nativeId, input.signal), exited]);
+			if (nativeId === void 0) await Promise.race([wire.createThread(input.cwd, permission(this.options.permissionMode), input.model, input.tools, input.signal), exited]);
+			else await Promise.race([wire.resumeThread(nativeId, input.tools, input.signal), exited]);
 			return new CodexRuntime(wire, child);
 		} catch (error) {
 			wire.close();
@@ -44612,16 +44685,48 @@ var CodexProvider = class {
 };
 //#endregion
 //#region src/runtime-registry.ts
+var LeasedRuntime = class {
+	runtime;
+	lease;
+	constructor(runtime, lease) {
+		this.runtime = runtime;
+		this.lease = lease;
+	}
+	get provider() {
+		return this.runtime.provider;
+	}
+	get nativeId() {
+		return this.runtime.nativeId;
+	}
+	setModel(model) {
+		return this.runtime.setModel(model);
+	}
+	runTurn(input) {
+		return this.runtime.runTurn(input);
+	}
+	interrupt() {
+		return this.runtime.interrupt();
+	}
+	async close() {
+		try {
+			await this.runtime.close();
+		} finally {
+			this.lease.close();
+		}
+	}
+};
 /** Owns live native runtimes and reconstructs them from durable bindings. */
 var NativeRuntimeRegistry = class {
 	provider;
 	store;
+	acquireToolLease;
 	runtimes = /* @__PURE__ */ new Map();
 	resolving = /* @__PURE__ */ new Map();
 	closed = false;
-	constructor(provider, store) {
+	constructor(provider, store, acquireToolLease) {
 		this.provider = provider;
 		this.store = store;
+		this.acquireToolLease = acquireToolLease;
 	}
 	async resolve(input) {
 		if (this.closed) throw new NativeAgentError("NATIVE_RUNTIME_CLOSED", "native-agents: runtime registry is closed");
@@ -44668,27 +44773,276 @@ var NativeRuntimeRegistry = class {
 		}));
 	}
 	async open(input) {
-		if (await this.store.read(input.dshSessionId) === void 0) {
-			if (!input.allowCreate) throw new NativeAgentError("NATIVE_BINDING_MISSING", `native-agents: binding for DSH session ${JSON.stringify(input.dshSessionId)} is missing`);
-			await this.store.create({
-				dshSessionId: input.dshSessionId,
-				provider: this.provider.id,
-				cwd: input.cwd
-			});
-			const runtime = await this.provider.create(input);
-			if (runtime.nativeId !== null) await this.markReady(input.dshSessionId, runtime.nativeId);
-			return runtime;
-		}
-		const ready = await this.store.readReady(input.dshSessionId, this.provider.id, input.cwd);
-		const runtime = await this.provider.resume({
+		const lease = await this.acquireToolLease?.(input.dshSessionId);
+		const runtimeInput = {
 			...input,
-			nativeId: ready.nativeId
-		});
-		if (runtime.nativeId !== ready.nativeId) {
-			await runtime.close();
-			throw new NativeAgentError("NATIVE_BINDING_CORRUPT", `native-agents: ${this.provider.id} resumed an unexpected native session id`);
+			...lease === void 0 ? {} : { tools: lease.connection }
+		};
+		try {
+			if (await this.store.read(input.dshSessionId) === void 0) {
+				if (!input.allowCreate) throw new NativeAgentError("NATIVE_BINDING_MISSING", `native-agents: binding for DSH session ${JSON.stringify(input.dshSessionId)} is missing`);
+				await this.store.create({
+					dshSessionId: input.dshSessionId,
+					provider: this.provider.id,
+					cwd: input.cwd
+				});
+				const runtime = await this.provider.create(runtimeInput);
+				if (runtime.nativeId !== null) await this.markReady(input.dshSessionId, runtime.nativeId);
+				return lease === void 0 ? runtime : new LeasedRuntime(runtime, lease);
+			}
+			const ready = await this.store.readReady(input.dshSessionId, this.provider.id, input.cwd);
+			const runtime = await this.provider.resume({
+				...runtimeInput,
+				nativeId: ready.nativeId
+			});
+			if (runtime.nativeId !== ready.nativeId) {
+				await runtime.close();
+				throw new NativeAgentError("NATIVE_BINDING_CORRUPT", `native-agents: ${this.provider.id} resumed an unexpected native session id`);
+			}
+			return lease === void 0 ? runtime : new LeasedRuntime(runtime, lease);
+		} catch (error) {
+			lease?.close();
+			throw error;
 		}
-		return runtime;
+	}
+};
+//#endregion
+//#region src/native-tools.ts
+const MAX_REQUEST_BYTES = 1048576;
+function nativeRoute(provider) {
+	return provider === "codex" ? "native-codex" : "native-claude-code";
+}
+function textContent(value) {
+	const structuredContent = value;
+	return {
+		content: [{
+			type: "text",
+			text: JSON.stringify(value)
+		}],
+		structuredContent
+	};
+}
+/** Maps the provider-neutral native tool catalog to the DSH subagent service. */
+var NativeSubagentController = class {
+	ctx;
+	policy;
+	constructor(ctx, policy) {
+		this.ctx = ctx;
+		this.policy = policy;
+	}
+	resolveCaller(sessionId) {
+		const caller = this.ctx.agents.get(SessionId(sessionId));
+		if (caller === void 0) throw new NativeAgentError("NATIVE_TOOL_CALLER_UNAVAILABLE", `native-agents: DSH session ${JSON.stringify(sessionId)} is not a live agent`);
+		return caller;
+	}
+	async createAgent(caller, input, signal) {
+		const current = caller.session.requestContext();
+		const provider = input.provider === void 0 ? current?.provider ?? caller.options.provider : nativeRoute(input.provider);
+		if (provider !== "native-codex" && provider !== "native-claude-code") throw new NativeAgentError("NATIVE_TOOL_PROVIDER_REQUIRED", "native-agents: create_agent requires a native Codex or Claude Code parent or explicit provider");
+		if (!this.policy.isNativeRouteEnabled(provider)) throw new NativeAgentError("NATIVE_TOOL_PROVIDER_DISABLED", `native-agents: requested child provider ${JSON.stringify(provider)} is disabled`);
+		const model = input.model ?? current?.model ?? caller.options.model;
+		return {
+			agent_id: (await this.ctx.subagents.startContinuable({
+				provider: this.policy.provider,
+				label: input.description,
+				request: {
+					parent: caller,
+					prompt: [{
+						type: "text",
+						text: input.prompt
+					}],
+					agentOptions: {
+						provider,
+						...model === void 0 ? {} : { model }
+					},
+					maxDepth: this.policy.maxDepth
+				},
+				signal
+			})).childId,
+			status: "running"
+		};
+	}
+	async sendMessage(caller, input, signal) {
+		return { message_id: await this.ctx.subagents.followup(caller, SessionId(input.agent_id), [{
+			type: "text",
+			text: input.message
+		}], {
+			source: {
+				kind: "coordinator",
+				form: "relay",
+				senderSessionId: caller.id
+			},
+			signal
+		}) };
+	}
+	async listAgents(caller, signal) {
+		return { agents: await this.ctx.subagents.listChildren(caller.id, signal) };
+	}
+	interruptAgent(caller, input) {
+		this.ctx.subagents.interrupt(SessionId(input.agent_id), {
+			kind: "ancestor",
+			agent: caller
+		});
+		return { accepted: true };
+	}
+	async report(caller, input, signal) {
+		return { message_id: await this.ctx.subagents.reportFrom(caller, [{
+			type: "text",
+			text: input.message
+		}], {
+			delivery: "next-step",
+			signal
+		}) };
+	}
+};
+/** Loopback MCP server with one revocable capability per native runtime. */
+var NativeToolHost = class {
+	controller;
+	tokens = /* @__PURE__ */ new Map();
+	server;
+	endpoint;
+	closed = false;
+	constructor(controller) {
+		this.controller = controller;
+	}
+	async acquire(sessionId) {
+		if (this.closed) throw new NativeAgentError("NATIVE_TOOL_HOST_CLOSED", "native-agents: native tool host is closed");
+		const url = await (this.endpoint ??= this.listen());
+		const token = randomBytes(32).toString("base64url");
+		this.tokens.set(token, sessionId);
+		let active = true;
+		return {
+			connection: {
+				url,
+				authorization: `Bearer ${token}`
+			},
+			close: () => {
+				if (!active) return;
+				active = false;
+				this.tokens.delete(token);
+			}
+		};
+	}
+	async close() {
+		if (this.closed) return;
+		this.closed = true;
+		this.tokens.clear();
+		const endpoint = this.endpoint;
+		if (endpoint !== void 0) await endpoint.catch(() => {});
+		const server = this.server;
+		if (server !== void 0) await new Promise((resolve, reject) => {
+			server.close((error) => {
+				if (error === void 0) resolve();
+				else reject(error);
+			});
+		});
+	}
+	async listen() {
+		const server = createServer((request, response) => {
+			this.handle(request, response);
+		});
+		this.server = server;
+		await new Promise((resolve, reject) => {
+			server.once("error", reject);
+			server.listen(0, "127.0.0.1", () => {
+				server.off("error", reject);
+				resolve();
+			});
+		});
+		const address = server.address();
+		return `http://127.0.0.1:${String(address.port)}/mcp`;
+	}
+	async handle(request, response) {
+		if (request.method !== "POST" || request.url?.split("?", 1)[0] !== "/mcp") {
+			this.jsonError(response, 405, -32e3, "Method not allowed");
+			return;
+		}
+		const token = this.bearerToken(request.headers.authorization);
+		const sessionId = token === void 0 ? void 0 : this.tokens.get(token);
+		if (sessionId === void 0) {
+			this.jsonError(response, 401, -32001, "Unauthorized");
+			return;
+		}
+		try {
+			const body = await this.readBody(request);
+			const caller = this.controller.resolveCaller(sessionId);
+			const mcp = this.createMcpServer(caller);
+			const transport = new StreamableHTTPServerTransport({
+				sessionIdGenerator: void 0,
+				enableDnsRebindingProtection: false
+			});
+			response.on("close", () => {
+				transport.close();
+				mcp.close();
+			});
+			await mcp.connect(transport);
+			await transport.handleRequest(request, response, body);
+		} catch (error) {
+			if (!response.headersSent) {
+				const tooLarge = error instanceof NativeAgentError && error.code === "NATIVE_TOOL_REQUEST_TOO_LARGE";
+				this.jsonError(response, tooLarge ? 413 : 500, -32603, error instanceof Error ? error.message : "MCP request failed");
+			}
+		}
+	}
+	createMcpServer(caller) {
+		const server = new McpServer({
+			name: "dsh-native-agents",
+			version: "0.3.1"
+		});
+		const [createAgent, sendMessage, listAgents, interruptAgent, report] = NATIVE_TOOL_NAMES;
+		server.registerTool(createAgent, {
+			description: "Create a background continuable DSH child agent for a delegated task.",
+			inputSchema: {
+				description: z$1.string().min(1),
+				prompt: z$1.string().min(1),
+				provider: z$1.enum(["codex", "claude-code"]).optional(),
+				model: z$1.string().min(1).optional()
+			}
+		}, async (args, extra) => textContent(await this.controller.createAgent(caller, args, extra.signal)));
+		server.registerTool(sendMessage, {
+			description: "Continue an existing child agent with another message.",
+			inputSchema: {
+				agent_id: z$1.string().min(1),
+				message: z$1.string().min(1)
+			}
+		}, async (args, extra) => textContent(await this.controller.sendMessage(caller, args, extra.signal)));
+		server.registerTool(listAgents, { description: "List direct DSH child agents and their current activity." }, async (_extra) => textContent(await this.controller.listAgents(caller, new AbortController().signal)));
+		server.registerTool(interruptAgent, {
+			description: "Interrupt a child agent current turn while keeping it continuable.",
+			inputSchema: { agent_id: z$1.string().min(1) }
+		}, async (args) => textContent(this.controller.interruptAgent(caller, args)));
+		server.registerTool(report, {
+			description: "Report selected content from this child agent to its DSH parent.",
+			inputSchema: { message: z$1.string().min(1) }
+		}, async (args, extra) => textContent(await this.controller.report(caller, args, extra.signal)));
+		return server;
+	}
+	bearerToken(header) {
+		if (header === void 0 || !header.startsWith("Bearer ")) return void 0;
+		const token = header.slice(7);
+		return token.length === 0 ? void 0 : token;
+	}
+	async readBody(request) {
+		const chunks = [];
+		let size = 0;
+		for await (const chunk of request) {
+			const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+			size += buffer.length;
+			if (size > MAX_REQUEST_BYTES) throw new NativeAgentError("NATIVE_TOOL_REQUEST_TOO_LARGE", "native-agents: MCP request exceeds 1 MiB");
+			chunks.push(buffer);
+		}
+		return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+	}
+	jsonError(response, status, code, message) {
+		response.writeHead(status, { "content-type": "application/json" });
+		response.end(JSON.stringify({
+			jsonrpc: "2.0",
+			error: {
+				code,
+				message
+			},
+			id: null
+		}));
 	}
 };
 //#endregion
@@ -44698,6 +45052,7 @@ const inject = [
 	"agents",
 	"llm",
 	"settings",
+	"subagents",
 	"subprocess"
 ];
 const SETTINGS_NAMESPACE = settingsNamespace("native-agents");
@@ -44719,6 +45074,11 @@ const Config = z.object({
 		env: z.dict(z.string()).default({}),
 		permissionMode: z.union(["dontAsk", "bypassPermissions"]).default("dontAsk"),
 		disposeGraceMs: z.number().default(3e3)
+	}),
+	nativeTools: z.object({
+		enabled: z.boolean().default(true),
+		subagentProvider: z.string().default("spawn"),
+		maxDepth: z.number().default(3)
 	})
 });
 function grace(value, field) {
@@ -44729,6 +45089,14 @@ function grace(value, field) {
 /** Register the two persistent native LLM routes. */
 function apply(ctx, config = {}) {
 	const store = new BindingStore(config.storageRoot === void 0 ? join(resolveDshHome(config.dshHome), "native-agents") : resolve(config.storageRoot));
+	const maxDepth = config.nativeTools?.maxDepth ?? 3;
+	if (!Number.isSafeInteger(maxDepth) || maxDepth < 0) throw new Error("native-agents: nativeTools.maxDepth must be a non-negative safe integer");
+	const enabledRoutes = /* @__PURE__ */ new Set();
+	const toolHost = config.nativeTools?.enabled === false ? void 0 : new NativeToolHost(new NativeSubagentController(ctx, {
+		provider: config.nativeTools?.subagentProvider ?? "spawn",
+		maxDepth,
+		isNativeRouteEnabled: (route) => enabledRoutes.has(route)
+	}));
 	const resolveCwd = (sessionId) => {
 		const cwd = ctx.agents.get(SessionId(sessionId))?.session.header.cwd;
 		if (cwd === void 0) throw new NativeAgentError("NATIVE_CWD_REQUIRED", `native-agents: DSH session ${JSON.stringify(sessionId)} has no live working directory`);
@@ -44747,7 +45115,7 @@ function apply(ctx, config = {}) {
 		resolveExecutable: (command, env, signal) => ctx.subprocess.resolveExecutable(command, env, signal),
 		spawn: (spec) => ctx.subprocess.spawn(spec)
 	})].map((provider) => {
-		const registry = new NativeRuntimeRegistry(provider, store);
+		const registry = new NativeRuntimeRegistry(provider, store, toolHost === void 0 ? void 0 : (sessionId) => toolHost.acquire(sessionId));
 		return {
 			provider,
 			registry,
@@ -44780,11 +45148,13 @@ function apply(ctx, config = {}) {
 		if (entry.registration === void 0) entry.registration = ctx.llm.registerAdapter([entry.provider.route], entry.adapter);
 		else entry.registration.replace([entry.provider.route]);
 		entry.enabled = true;
+		enabledRoutes.add(entry.provider.route);
 	};
 	const disable = async (entry) => {
 		if (!entry.enabled) return;
 		entry.registration?.replace([]);
 		entry.enabled = false;
+		enabledRoutes.delete(entry.provider.route);
 		await entry.registry.releaseAll();
 	};
 	const desired = (value, route) => value.providers[route].enabled;
@@ -44794,6 +45164,9 @@ function apply(ctx, config = {}) {
 			await entry.registry.closeAll();
 		}, `native-agents: close ${entry.provider.id} runtimes`);
 	}
+	if (toolHost !== void 0) ctx.effect(() => async () => {
+		await toolHost.close();
+	}, "native-agents: close native tool host");
 	let reconciliation = Promise.resolve();
 	ctx.effect(() => settings.watch((next) => {
 		reconciliation = reconciliation.then(async () => {
