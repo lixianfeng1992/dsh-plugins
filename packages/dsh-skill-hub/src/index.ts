@@ -1,0 +1,5 @@
+export { name, provide, apply } from './plugin.js'
+export { SkillHubSynchronizer } from './sync.js'
+export { parseRepositoryUrl, repositoryPaths } from './repository.js'
+export type { RepositoryRef } from './repository.js'
+export type { SkillHubConfig, SkillHubProgress, SkillHubState, SyncCounts, SyncResult } from './types.js'

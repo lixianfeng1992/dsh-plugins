@@ -1,0 +1,5 @@
+export { apply, Config, DEFAULT_CONFIG, inject, name, provide, SETTINGS_NAMESPACE, TOKEN_REF } from './plugin.js'
+export { fetchPendingTodos, parseGitLabTodo } from './gitlab.js'
+export { GitLabTodosSynchronizer } from './sync.js'
+export type { GitLabTokenProvider, GitLabTodosSynchronizerOptions } from './sync.js'
+export type { GitLabTodo, GitLabTodosConfig, GitLabTodosState, GitLabTodosStatus } from './types.js'

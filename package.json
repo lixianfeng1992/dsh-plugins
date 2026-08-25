@@ -1,0 +1,12 @@
+{
+  "name": "dsh-plugins",
+  "private": true,
+  "packageManager": "pnpm@11.22.0",
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "build": "pnpm -r run build",
+    "test": "pnpm -r run test",
+    "typecheck": "pnpm -r run typecheck",
+    "pack": "pnpm -r --if-present run pack"
+  }
+}

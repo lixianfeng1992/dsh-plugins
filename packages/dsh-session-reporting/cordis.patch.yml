@@ -1,0 +1,3 @@
+- insert:
+    - id: session-reporting
+      name: 'dsh-session-reporting'
