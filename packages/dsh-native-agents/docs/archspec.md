@@ -2,175 +2,229 @@
 
 Status: implementation target for the prototype.
 
-## Scope
+## Goal
 
-`dsh-native-agents` lets a continuable DSH child use the locally installed Claude Code or Codex runtime while DSH remains the owner of the child agent, turn lifecycle, durable transcript, and continuation address.
+`dsh-native-agents` connects locally installed coding agents to ordinary top-level DSH sessions. The first implementation supports Codex and Claude Code, while the provider protocol must allow another native agent to be added without changing the DSH adapter, runtime registry, persistence, or Web settings page.
 
-The plugin is a pure Cordis extension. It registers LLM adapters and uses public DSH services; it does not require changes to DeepSeek Harness.
+The package is a pure Cordis plugin. It uses public DSH LLM, subprocess, settings, session, and Web slot capabilities and does not modify DeepSeek Harness.
 
-The package also ships a Web client face. It preserves coordinator relay provenance in the session log while shadowing the generic context renderer so parent-to-child relay messages appear as labeled message bubbles. Other non-user context remains a disclosed context row.
+This package does not register subagent tools. A native agent is selected as the provider of an ordinary DSH session, not created as a child of another DSH agent.
 
-## Authority and persistence
+## Ownership
 
-There is one logical agent session: the DSH session. The DSH session id is the public continuation id used by `send_message`, the Web application, and agent lifecycle APIs.
+The DSH session is the only public session. It owns the conversation URL, user-visible transcript, title, lifecycle, cancellation, and continuation identity.
 
-Claude Code and Codex keep provider-native conversation data in their own stores. The plugin does not copy or reinterpret those transcripts. It persists only the binding required to reopen the provider conversation:
+Each native provider may create its own durable conversation. That provider conversation is an internal continuation resource, not a second user-facing session. The plugin persists only the association needed to reopen it:
 
 ```text
-dshSessionId -> provider + nativeId + cwd
+dshSessionId -> providerId + nativeId + cwd
 ```
 
-Bindings live under `<storageRoot>/bindings/`. The default storage root is `<dshHome>/native-agents/`.
+Provider-native transcripts remain in the provider's own storage. The plugin neither relocates nor replays them. Bindings live under `<storageRoot>/bindings/`; the default storage root is `<dshHome>/native-agents/`.
 
-## Components
+One DSH session binds to one native provider when its first native turn starts. The provider cannot change after binding because two providers do not share one native conversation history. A model may change within the bound provider. Selecting another provider requires a new DSH session.
+
+## Runtime structure
 
 ```text
-DSH continuable child
+DSH session and Web UI
   -> DSH AgentLoop
   -> NativeLlmAdapter
-  -> NativeRuntimeRegistry
-  -> NativeProvider
-  -> NativeRuntime
-  -> Claude SDK Query | Codex app-server
+  -> NativeProviderHost
+       -> NativeRuntimeRegistry
+       -> BindingStore
+       -> NativeProvider
+            -> CodexProvider  -> local codex app-server
+            -> ClaudeProvider -> local Claude Code SDK and CLI
 ```
 
-`NativeLlmAdapter` is the DSH integration point. It converts the newest admitted DSH user or coordinator message into one native turn and projects normalized native events into `StreamChunk` values.
+The DSH AgentLoop remains the host lifecycle. For a native route it records the request and projected response, carries cancellation, and drives the adapter. The native runtime remains responsible for its system prompt, project instructions, context management, tools, permissions, and provider transcript.
 
-`NativeRuntimeRegistry` owns live runtime instances by DSH session id. It reuses a live runtime for follow-up turns and reconstructs a missing runtime from a ready binding after plugin or process restart.
+`NativeLlmAdapter` is provider-neutral. It exposes one DSH LLM route per enabled native provider, delegates model metadata to that provider, sends only the newly admitted DSH message to the native conversation, and projects normalized native events into DSH stream chunks.
 
-`NativeProvider` owns provider-specific creation and resumption. `ClaudeProvider` and `CodexProvider` implement the same interface without inheritance.
+`NativeProviderHost` owns provider registrations, discovery state, enabled settings, catalog caching, adapter registration handles, and provider runtime registries. It reconciles settings changes atomically: enabling a discovered provider registers its DSH route; disabling it first removes the route, then closes its resident runtimes. Durable bindings are retained.
 
-`NativeRuntime` owns one live provider conversation and its process resources. Claude keeps one SDK `Query` alive across turns. Codex keeps one app-server process and one resumed thread alive across turns.
+`NativeRuntimeRegistry` owns live runtimes by DSH session id. It reuses a live runtime for later turns and reconstructs one from a ready binding after plugin or process restart.
 
-## Provider interfaces
+## Provider protocol
 
 ```ts
+type NativeProviderStatus =
+  | { state: 'available'; version?: string }
+  | { state: 'unavailable'; reason: string }
+  | { state: 'error'; message: string }
+
+interface NativeCatalog {
+  readonly models: readonly NativeModel[]
+  readonly defaultModel?: string
+}
+
 interface NativeProvider {
-  readonly id: NativeProviderId
+  readonly id: string
+  readonly route: string
   readonly displayName: string
+
+  discover(signal?: AbortSignal): Promise<NativeProviderStatus>
+  fetchCatalog(signal?: AbortSignal): Promise<NativeCatalog>
   create(input: NativeCreateRuntimeInput): Promise<NativeRuntime>
   resume(input: NativeResumeRuntimeInput): Promise<NativeRuntime>
 }
 
 interface NativeRuntime {
-  readonly provider: NativeProviderId
+  readonly provider: string
   readonly nativeId: string | null
+
+  setModel(model: string | undefined): Promise<void>
   runTurn(input: NativeTurnInput): AsyncIterable<NativeEvent>
   interrupt(): Promise<void>
   close(): Promise<void>
 }
 ```
 
-`create()` allocates a new provider conversation. `resume()` opens the exact provider conversation named by the binding. Neither method sends the first prompt; every prompt enters through `runTurn()`.
+A provider module owns executable discovery, authentication-sensitive probing, native wire validation, model conversion, runtime creation, runtime resumption, and model switching. It must not import DSH Web or session presentation code.
 
-`runTurn()` permits one active turn. Concurrent calls fail with `NATIVE_TURN_ACTIVE`. A runtime remains reusable after completion and becomes unusable after `close()`.
+Adding a provider consists of implementing `NativeProvider`, declaring its default enabled state and settings metadata, and adding it to the provider factory list. The host and Web page render provider records generically.
 
-`interrupt()` requests cancellation of the active provider turn and waits for the provider request to be sent. `close()` is idempotent, interrupts active work, closes the protocol connection, and terminates the owned process tree.
+Provider ids and DSH routes are stable persistence identifiers. Display names and status text are presentation metadata. Duplicate ids or routes fail plugin loading.
 
-## Native events
+## Built-in providers
+
+### Codex
+
+Codex resolves `codex` through the DSH subprocess capability. Catalog discovery starts a short-lived local `codex app-server`, performs `initialize`, sends `model/list`, reads configured defaults, converts model and reasoning metadata, and always closes the process.
+
+A live session keeps one app-server process and one Codex thread. Creation uses `thread/start`; cold continuation uses `thread/resume`. Model changes follow the app-server semantics used by Paseo and apply to the next turn.
+
+### Claude Code
+
+Claude Code resolves `claude` through the DSH subprocess capability and reads its version. Claude Code exposes model selection but no supported model-list command. Its catalog therefore follows Paseo: a plugin-owned model manifest is filtered by the installed Claude Code version, then augmented with model ids declared by `~/.claude/settings.json` and its supported `ANTHROPIC_*_MODEL` environment entries.
+
+A live session keeps one Claude SDK query. Creation starts a persisted query; cold continuation resumes its session id. Model changes call the live query's model setter and apply before the next prompt.
+
+## Discovery and catalog
+
+Discovery and enablement are separate facts:
+
+- `discovered` means the executable is resolvable and its version probe succeeds.
+- `enabled` is the persisted user choice controlling whether the DSH route is registered.
+- `available` means the enabled provider is registered and its catalog can currently be read.
+- A disabled provider remains visible in settings and may still be probed on explicit refresh.
+
+Catalog reads use one provider-owned in-flight request and a bounded cache. Concurrent Web and session catalog requests share the same acquisition. Explicit refresh invalidates the cache. One provider's failure does not hide healthy providers.
+
+The DSH model selector remains the model-selection transport. Enabled providers publish their models through `NativeLlmAdapter.listModels()`, producing separate `Codex (Local)` and `Claude Code (Local)` groups. The selected provider route and model flow through the existing `session.selectModel` API.
+
+## Web settings
+
+The package contributes a `Native Agents` section through the Web `settings.section` slot. The page is driven by generic provider view records and contains no Codex- or Claude-specific branches.
+
+Each provider row shows:
+
+- display name and provider icon;
+- discovered, unavailable, disabled, loading, or error status;
+- installed version when available;
+- selectable model count or catalog failure;
+- an enable switch;
+- a disclosure with executable diagnostics and a catalog refresh command.
+
+The prototype does not support custom executable paths. Providers resolve the current host `PATH`. Provider-specific environment and permission ceilings remain deployment configuration rather than browser-editable secrets.
+
+Changing a switch writes the plugin's DSH settings namespace. The Host reconciles the provider before acknowledging the new effective state. The page disables the switch while reconciliation is pending and reports a failure without pretending the requested state became effective.
+
+Disabling a provider with an active turn is rejected. Disabling an idle provider unregisters its LLM route, closes resident runtimes, removes it from the session model selector, and preserves durable bindings. Re-enabling allows those sessions to cold-resume.
+
+## Turn projection
 
 ```ts
 type NativeEvent =
   | { type: 'thread-started'; nativeId: string }
   | { type: 'text-delta'; text: string }
   | { type: 'reasoning-delta'; text: string }
+  | { type: 'tool-start'; callId: string; name: string; input: JsonValue }
+  | { type: 'tool-result'; callId: string; output?: JsonValue; error?: string }
   | { type: 'usage'; usage: NativeUsage }
   | { type: 'turn-completed'; nativeTurnId?: string }
   | { type: 'turn-failed'; failure: NativeFailure }
   | { type: 'turn-canceled'; reason: string }
 ```
 
-Provider implementations validate their wire formats and emit this closed event union. The adapter never reads Claude SDK messages or Codex JSON-RPC notifications directly.
-
-Provider-native tool calls remain native. The plugin must not emit DSH `tool-call` blocks for them because the DSH AgentLoop would execute the same operation again.
-
-## DSH projection
+Provider implementations validate native messages and emit this closed union. The adapter never reads Claude SDK messages or Codex JSON-RPC notifications directly.
 
 | Native event | DSH stream output |
 |---|---|
-| `thread-started` | Mark the creating binding ready; no model-visible chunk |
-| `text-delta` | Lazily open a text block and emit `text-delta` |
-| `reasoning-delta` | Lazily open a reasoning block and emit `reasoning-delta` |
-| `usage` | Emit `usage` using the available native token counts |
-| `turn-completed` | Close open blocks and emit `finish` with stop reason and `replayState` |
-| `turn-failed` | Close open blocks and emit `finish` with error reason |
-| `turn-canceled` | Close open blocks and emit `finish` with aborted reason |
+| `thread-started` | Mark the binding ready; emit no model-visible chunk |
+| `text-delta` | Open or extend one DSH text block |
+| `reasoning-delta` | Open or extend one DSH reasoning block |
+| `tool-start` | Ignore for DSH projection; provider executes the tool |
+| `tool-result` | Ignore for DSH projection; provider owns the result |
+| `usage` | Emit available native token counts |
+| `turn-completed` | Close blocks and emit a stop finish with replay metadata |
+| `turn-failed` | Close blocks and emit a structured error finish |
+| `turn-canceled` | Close blocks and emit an aborted finish |
 
-The adapter must emit every streamed text fragment exactly once. A provider may use its final result as a text fallback only when it emitted no text deltas for that turn.
-
-`replayState.response` contains `provider`, `nativeId`, and an optional `nativeTurnId`. This is diagnostic replay metadata; the binding store remains authoritative for cold resumption.
+Provider-native tools remain native. The adapter must not emit DSH executable tool-call chunks because that would execute the operation twice. Both providers normalize their protocol-specific tool notifications into the same `tool-start`/`tool-result` events for the internal provider protocol, then omit them from DSH projection. They do not join the model-visible surface, invoke a DSH executor, or alter native continuation. They are intentionally not persisted by this pure-plugin prototype because DSH does not expose safe registration for new session event types.
 
 ## Lifecycle
 
-### Create
+### First turn
 
-1. The adapter validates an initial DSH request and resolves the child working directory.
-2. The registry atomically creates a `creating` binding.
+1. The adapter resolves the selected provider, model, DSH session, and working directory.
+2. The registry creates a `creating` binding atomically.
 3. The provider creates a runtime without sending the prompt.
-4. The registry caches the runtime and runs the prompt.
-5. The first `thread-started` event atomically changes the binding to `ready`.
-6. Completion leaves the runtime alive for the next DSH turn.
+4. The runtime applies the selected model and runs the newly admitted message.
+5. The first native identity marks the binding `ready` atomically.
+6. Completion leaves the runtime resident for the next turn.
 
-Codex normally knows its thread id during `create()`, so the registry may mark the binding ready before `runTurn()`. Claude normally reports its session id from the live query, so readiness occurs while consuming the first turn.
+### Follow-up and model change
 
-### Follow-up
+The registry returns the resident runtime. Before each turn, the adapter compares the DSH-selected model with the runtime's applied model. A difference must complete through `setModel()` before the prompt is sent. Failure stops the turn; the UI selection must never silently diverge from the native runtime.
 
-The registry returns the existing runtime for the DSH session. The adapter sends only the latest admitted user or coordinator text to `runTurn()`. Earlier DSH messages are not replayed because the native runtime already owns that provider context.
+Only the newly admitted DSH message is sent. Previous DSH messages are not replayed because the native provider already owns that context.
 
-### Cold resume
+### Cold continuation
 
-If no live runtime exists, the registry reads a ready binding, validates its provider and working directory, calls `provider.resume()`, and caches the reconstructed runtime before sending the new prompt.
+Without a resident runtime, the registry reads the ready binding, validates provider and working directory, calls `provider.resume()`, applies the current model, caches the runtime, and sends the new message.
 
-A missing binding may create a provider conversation only for an initial DSH history. A `creating` binding fails with `NATIVE_CREATION_INCOMPLETE`; the plugin never guesses whether provider allocation succeeded.
+A missing binding can create a provider conversation only for a session with no previous native response. A `creating` binding fails with `NATIVE_CREATION_INCOMPLETE`; the plugin never guesses whether native allocation succeeded.
 
 ### Interrupt and shutdown
 
-An aborted DSH request invokes `runtime.interrupt()`. The provider terminal event closes the DSH stream as aborted; the runtime remains reusable when the provider confirms a usable conversation.
+DSH cancellation invokes `runtime.interrupt()`. Plugin disposal and provider disablement close all affected runtimes and owned process trees. Ready bindings remain available for later cold continuation.
 
-Plugin disposal calls `NativeRuntimeRegistry.closeAll()`. All cached runtimes close and all owned provider processes terminate. The durable bindings remain available for cold resume after restart.
+## Persistence invariants
 
-## Binding invariants
+Binding files use exclusive creation and atomic replacement. DSH session ids are hashed before use as path components.
 
-Binding files use atomic exclusive creation and atomic replacement when becoming ready. A DSH session id is encoded before use as a file name and cannot escape the binding root.
+A ready binding has exactly one provider id, native id, and working directory. Provider or working-directory mismatches fail before a native turn. Bindings contain no prompts, assistant output, credentials, access tokens, or provider transcript contents.
 
-A ready binding has exactly one provider, native id, and working directory. Provider or working-directory mismatches fail before a native turn starts. A provider may report one native id for a creating binding; a different or repeated id is corruption.
+The DSH session log owns the provider route and model actually consumed by each request. The binding store owns only native continuation identity. Neither source silently repairs the other.
 
-Bindings do not contain prompts, assistant output, provider credentials, or provider transcript contents.
+## Policy and failure
 
-## Policy
+Native execution enforces the intersection of DSH policy, the plugin deployment ceiling, and provider capability. Safe modes are defaults. Bypass modes require explicit deployment configuration and are never enabled from discovery or browser toggles.
 
-Native execution must enforce the intersection of DSH policy, the plugin deployment ceiling, and provider capability. Unattended delegated children never ask the user for approval: unsupported approval and elicitation requests are declined.
+The adapter performs no automatic LLM retry because a native turn may have changed files or external state before a failure is observed.
 
-The prototype exposes explicit safe and bypass deployment modes for each provider. Bypass mode is an administrator choice and must not be selected implicitly.
-
-## Failure and concurrency
-
-The plugin performs no automatic LLM retry because a native turn can already have changed files or external state before a failure is observed.
-
-One DSH session permits one foreground native turn. Different DSH sessions may run concurrently. Provider protocol errors, early process exit, missing identity, empty final output, and binding mismatches fail with stable `NATIVE_*` codes.
-
-A runtime failure evicts that runtime from the registry. A later DSH turn may cold-resume only when its binding is ready. Cleanup errors do not replace the original turn failure.
+One DSH session permits one foreground native turn. Different sessions may run concurrently. Stable `NATIVE_*` errors cover discovery, catalog, protocol, process, identity, binding, model-switch, and lifecycle failures. Cleanup errors do not replace the original failure.
 
 ## Deferred capabilities
 
-- Native tool calls and subagent activity as structured live DSH timeline blocks.
-- Active-turn steering; `send_message` remains a queued DSH follow-up turn.
-- Native session import, rewind, fork, archive, and provider transcript browsing.
-- Dynamic provider model and feature catalogs.
-- Cross-platform policy parity beyond the provider and DSH capabilities available on the host.
+- Native tool-call projection into the DSH conversation. Provider tool execution remains provider-owned and is intentionally omitted from the DSH session log because the pure-plugin API does not expose safe registration for new session event types.
+- Native subagent activity as structured DSH trajectory entries.
+- Active-turn steering; new DSH input remains a queued follow-up turn.
+- Native session import, fork, rewind, archive, and transcript browsing.
+- Provider installation or marketplace workflows from the settings page.
+- Cross-platform policy parity beyond macOS prototype behavior.
 
 ## Acceptance criteria
 
-- Two DSH turns reuse one live Claude `Query` or one live Codex app-server and thread.
-- A new plugin instance resumes the native conversation from the persisted DSH binding.
-- Text, reasoning, usage, finish status, and replay metadata survive DSH stream projection.
-- Abort interrupts the active provider turn, and plugin disposal closes every cached runtime.
-- Existing continuable-child creation and `send_message` address the DSH child session without exposing a second session id.
-- Parent-to-child relay events remain `coordinator` sources and render as parent-agent message bubbles in the Web conversation.
-- The package passes focused tests, TypeScript checking, build, and tarball creation.
-
-## Implementation baseline
-
-The plugin uses provider and runtime interfaces, a live runtime registry, resident Claude and Codex processes, and normalized streaming events before DSH projection.
-
-Structured native tool activity, active-turn steering, session management commands, and complete policy derivation remain outside this increment.
+- The Web settings page lists Codex and Claude Code with discovery state, version, model count, refresh, and persisted enable switches.
+- Disabling an idle provider removes its models and route without deleting bindings; re-enabling permits cold continuation.
+- Codex models come from the local app-server `model/list`; Claude models follow the Paseo manifest, installed version, and local settings merge.
+- A normal top-level DSH session can select either enabled native provider and run two turns in one native conversation.
+- A new plugin process resumes that native conversation from the persisted binding.
+- Same-provider model changes reach the native runtime before the next prompt; cross-provider changes on a bound session fail clearly.
+- Text, reasoning, usage, completion, cancellation, and failures project into the DSH transcript without replaying native tools.
+- Native tool starts and results remain normalized inside the provider protocol, but are not projected into or persisted in the DSH transcript.
+- The bundle contains no subagent tool registration or coordinator-message presentation behavior.
+- Focused tests, type checking, build, tarball installation, and a Web restart smoke test pass.

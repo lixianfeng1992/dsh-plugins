@@ -12,13 +12,17 @@ describe('NativeRuntimeRegistry', () => {
     const runtime = {
       provider: 'codex',
       nativeId: 'native-1',
+      setModel: vi.fn(async () => {}),
       runTurn: vi.fn(),
       interrupt: vi.fn(async () => {}),
       close: vi.fn(async () => {}),
     } satisfies NativeRuntime
     const provider: NativeProvider = {
       id: 'codex',
-      displayName: 'Native Codex',
+      route: 'native-codex',
+      displayName: 'Codex (Local)',
+      discover: async () => ({ state: 'available' }),
+      fetchCatalog: async () => ({ models: [{ id: 'default', name: 'Native default' }] }),
       create: vi.fn(async () => runtime),
       resume: vi.fn(),
     }

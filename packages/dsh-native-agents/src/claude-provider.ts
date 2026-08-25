@@ -9,15 +9,18 @@ import {
 } from '@anthropic-ai/claude-agent-sdk'
 import { scrubbedParentEnv, type SubprocessHandle, type SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
 import { ManagedClaudeProcess, claudeSpawnSpec } from './claude-process.js'
+import { claudeCatalog } from './claude-models.js'
 import { NativeAgentError } from './error.js'
 import {
   AsyncEventQueue,
   type NativeCreateRuntimeInput,
+  type NativeCatalog,
   type NativeEvent,
   type NativeProvider,
   type NativeResumeRuntimeInput,
   type NativeRuntime,
   type NativeTurnInput,
+  type NativeProviderStatus,
 } from './native.js'
 
 export type ClaudePermissionMode = 'dontAsk' | 'bypassPermissions'
@@ -49,6 +52,15 @@ function record(value: unknown): Record<string, unknown> | undefined {
 
 function finite(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined
+}
+
+function jsonValue(value: unknown): import('@deepseek-ai/dsh-session').JsonValue {
+  try {
+    const copy = JSON.parse(JSON.stringify(value))
+    return copy === undefined ? null : copy
+  } catch {
+    return String(value)
+  }
 }
 
 function usage(message: SDKResultMessage): Extract<NativeEvent, { type: 'usage' }> | undefined {
@@ -102,6 +114,11 @@ export class ClaudeRuntime implements NativeRuntime {
 
   get nativeId(): string | null {
     return this.sessionId
+  }
+
+  async setModel(model: string | undefined): Promise<void> {
+    if (this.closed) throw new NativeAgentError('NATIVE_RUNTIME_CLOSED', 'native-agents: Claude runtime is closed')
+    await this.operation.setModel(model)
   }
 
   async * runTurn(input: NativeTurnInput): AsyncIterable<NativeEvent> {
@@ -170,6 +187,28 @@ export class ClaudeRuntime implements NativeRuntime {
     this.captureIdentity(message)
     const active = this.active
     if (active === undefined) return
+    const body = record((message as { message?: unknown }).message)
+    const content = body?.content
+    if (Array.isArray(content)) {
+      for (const block of content) {
+        const item = record(block)
+        if (item?.type === 'tool_use' && typeof item.id === 'string' && typeof item.name === 'string') {
+          active.events.push({
+            type: 'tool-start',
+            callId: item.id,
+            name: item.name,
+            input: jsonValue(item.input),
+          })
+        } else if (item?.type === 'tool_result' && typeof item.tool_use_id === 'string') {
+          active.events.push({
+            type: 'tool-result',
+            callId: item.tool_use_id,
+            ...'content' in item ? { output: jsonValue(item.content) } : {},
+            ...item.is_error === true ? { error: 'Claude Code tool returned an error' } : {},
+          })
+        }
+      }
+    }
     if (message.type === 'stream_event') {
       const event = record(message.event)
       const delta = record(event?.delta)
@@ -230,9 +269,24 @@ export class ClaudeRuntime implements NativeRuntime {
 /** Creates resident Claude Code runtimes through the official Agent SDK. */
 export class ClaudeProvider implements NativeProvider {
   readonly id = 'claude-code' as const
-  readonly displayName = 'Native Claude Code'
+  readonly route = 'native-claude-code'
+  readonly displayName = 'Claude Code (Local)'
 
   constructor(private readonly options: ClaudeProviderOptions) {}
+
+  async discover(signal = new AbortController().signal): Promise<NativeProviderStatus> {
+    try {
+      const version = await this.resolveVersion(signal)
+      return { state: 'available', version }
+    } catch (error: unknown) {
+      return { state: 'unavailable', reason: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
+  async fetchCatalog(signal = new AbortController().signal): Promise<NativeCatalog> {
+    const version = await this.resolveVersion(signal)
+    return await claudeCatalog(version, this.options.env.CLAUDE_CONFIG_DIR)
+  }
 
   create(input: NativeCreateRuntimeInput): Promise<NativeRuntime> {
     return this.open(input)
@@ -240,6 +294,31 @@ export class ClaudeProvider implements NativeProvider {
 
   resume(input: NativeResumeRuntimeInput): Promise<NativeRuntime> {
     return this.open(input, input.nativeId)
+  }
+
+  private async resolveVersion(signal: AbortSignal): Promise<string> {
+    const executable = await this.options.resolveExecutable('claude', this.options.env, signal)
+    const child = this.options.spawn({
+      argv: [executable, '--version'],
+      cwd: process.cwd(),
+      stdio: {
+        stdin: 'ignore',
+        stdout: { maxBytes: 8_192 },
+        stderr: { maxBytes: 8_192 },
+      },
+      graceMs: this.options.graceMs,
+      signal,
+      env: this.options.env,
+    })
+    const outcome = await child.done
+    if (outcome.exitCode !== 0) {
+      const detail = child.collected.stderr?.readFrom(0).text.trim()
+      throw new NativeAgentError('NATIVE_DISCOVERY_FAILED', detail || 'Claude Code version probe failed')
+    }
+    const output = child.collected.stdout?.readFrom(0).text.trim() ?? ''
+    const match = /\d+\.\d+\.\d+/.exec(output)
+    if (match === null) throw new NativeAgentError('NATIVE_DISCOVERY_FAILED', 'Claude Code returned no version')
+    return match[0]
   }
 
   private async open(

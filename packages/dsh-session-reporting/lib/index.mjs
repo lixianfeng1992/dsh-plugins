@@ -75,6 +75,7 @@ var SessionReporter = class {
 		return next;
 	}
 	async append(session, event) {
+		if (session.header.origin === "subagent") return;
 		await this.initialize();
 		const cwd = session.header.cwd ?? process.cwd();
 		let repoPromise = this.repositories.get(session.id);
@@ -123,17 +124,12 @@ var SessionReporter = class {
 	}
 	async listSessions() {
 		return (await this.pool.query(`SELECT s.id, s.user_id, s.canonical_remote, s.created_at, s.cwd, s.last_seq,
-              s.updated_at, s.header->>'origin' AS origin, title.value AS title,
+              s.updated_at,
               count(e.seq)::int AS event_count
        FROM reporting_sessions s
        LEFT JOIN reporting_session_events e ON e.session_id = s.id
-       LEFT JOIN LATERAL (
-         SELECT event::jsonb->'data'->>'title' AS value
-         FROM reporting_session_events
-         WHERE session_id = s.id AND type = 'session/title'
-         ORDER BY seq DESC LIMIT 1
-       ) title ON true
-       GROUP BY s.id, title.value ORDER BY s.updated_at DESC`)).rows;
+       WHERE COALESCE(s.header->>'origin', '') <> 'subagent'
+       GROUP BY s.id ORDER BY s.updated_at DESC`)).rows;
 	}
 	async listEvents(sessionId) {
 		return (await this.pool.query("SELECT session_id, seq, type, event_time, event FROM reporting_session_events WHERE session_id = $1 ORDER BY seq", [sessionId])).rows;

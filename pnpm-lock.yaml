@@ -79,7 +79,7 @@ importers:
     dependencies:
       '@deepseek-ai/dsh-sdk-protocol':
         specifier: ^0.0.1-rc.1
-        version: 0.0.1-rc.1(@deepseek-ai/cordis@deepseek-harness+vendor+cordis)(@deepseek-ai/dsh-invariants@0.0.1-rc.1(@deepseek-ai/cordis@deepseek-harness+vendor+cordis))(@deepseek-ai/dsh-llm@deepseek-harness+packages+llm+llm)(@deepseek-ai/dsh-session@deepseek-harness+packages+core+session)(@deepseek-ai/dsh-subagent@deepseek-harness+packages+subagent+subagent)
+        version: 0.0.1-rc.1(@deepseek-ai/cordis@deepseek-harness+vendor+cordis)(@deepseek-ai/dsh-invariants@0.0.1-rc.1(@deepseek-ai/cordis@deepseek-harness+vendor+cordis))(@deepseek-ai/dsh-llm@deepseek-harness+packages+llm+llm)(@deepseek-ai/dsh-session@deepseek-harness+packages+core+session)
       '@deepseek-ai/schemastery':
         specifier: 3.18.1
         version: 3.18.1
@@ -93,12 +93,18 @@ importers:
       '@deepseek-ai/dsh-agent':
         specifier: link:../../../deepseek-harness/packages/core/agent
         version: link:../../../deepseek-harness/packages/core/agent
+      '@deepseek-ai/dsh-api-remotes':
+        specifier: link:../../../deepseek-harness/packages/api/remotes
+        version: link:../../../deepseek-harness/packages/api/remotes
       '@deepseek-ai/dsh-client-runtime':
         specifier: link:../../../deepseek-harness/packages/client/runtime
         version: link:../../../deepseek-harness/packages/client/runtime
       '@deepseek-ai/dsh-client-ui-conversation':
         specifier: link:../../../deepseek-harness/packages/client/ui-conversation
         version: link:../../../deepseek-harness/packages/client/ui-conversation
+      '@deepseek-ai/dsh-client-ui-settings':
+        specifier: link:../../../deepseek-harness/packages/client/ui-settings
+        version: link:../../../deepseek-harness/packages/client/ui-settings
       '@deepseek-ai/dsh-home-paths':
         specifier: link:../../../deepseek-harness/packages/util/home-paths
         version: link:../../../deepseek-harness/packages/util/home-paths
@@ -108,15 +114,12 @@ importers:
       '@deepseek-ai/dsh-session':
         specifier: link:../../../deepseek-harness/packages/core/session
         version: link:../../../deepseek-harness/packages/core/session
-      '@deepseek-ai/dsh-subagent':
-        specifier: link:../../../deepseek-harness/packages/subagent/subagent
-        version: link:../../../deepseek-harness/packages/subagent/subagent
+      '@deepseek-ai/dsh-settings':
+        specifier: link:../../../deepseek-harness/packages/settings/settings
+        version: link:../../../deepseek-harness/packages/settings/settings
       '@deepseek-ai/dsh-subprocess':
         specifier: link:../../../deepseek-harness/packages/subprocess/subprocess
         version: link:../../../deepseek-harness/packages/subprocess/subprocess
-      '@deepseek-ai/dsh-tool-subagent':
-        specifier: link:../../../deepseek-harness/packages/subagent/tool-subagent
-        version: link:../../../deepseek-harness/packages/subagent/tool-subagent
       '@types/node':
         specifier: 22.20.0
         version: 22.20.0
@@ -1756,13 +1759,12 @@ snapshots:
       '@deepseek-ai/cordis': 4.0.1
       '@deepseek-ai/schemastery': 3.18.1
 
-  '@deepseek-ai/dsh-sdk-protocol@0.0.1-rc.1(@deepseek-ai/cordis@deepseek-harness+vendor+cordis)(@deepseek-ai/dsh-invariants@0.0.1-rc.1(@deepseek-ai/cordis@deepseek-harness+vendor+cordis))(@deepseek-ai/dsh-llm@deepseek-harness+packages+llm+llm)(@deepseek-ai/dsh-session@deepseek-harness+packages+core+session)(@deepseek-ai/dsh-subagent@deepseek-harness+packages+subagent+subagent)':
+  '@deepseek-ai/dsh-sdk-protocol@0.0.1-rc.1(@deepseek-ai/cordis@deepseek-harness+vendor+cordis)(@deepseek-ai/dsh-invariants@0.0.1-rc.1(@deepseek-ai/cordis@deepseek-harness+vendor+cordis))(@deepseek-ai/dsh-llm@deepseek-harness+packages+llm+llm)(@deepseek-ai/dsh-session@deepseek-harness+packages+core+session)':
     dependencies:
       '@deepseek-ai/cordis': link:../deepseek-harness/vendor/cordis
       '@deepseek-ai/dsh-invariants': 0.0.1-rc.1(@deepseek-ai/cordis@deepseek-harness+vendor+cordis)
       '@deepseek-ai/dsh-llm': link:../deepseek-harness/packages/llm/llm
       '@deepseek-ai/dsh-session': link:../deepseek-harness/packages/core/session
-      '@deepseek-ai/dsh-subagent': link:../deepseek-harness/packages/subagent/subagent
 
   '@deepseek-ai/dsh-session@0.1.1-rc.2(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-llm@0.1.1-rc.2(@deepseek-ai/cordis@4.0.1))':
     dependencies:

@@ -2,6 +2,7 @@ import { createRequire } from "node:module";
 import tt, { dirname, join, resolve } from "node:path";
 import { resolveDshHome } from "@deepseek-ai/dsh-home-paths";
 import { SessionId } from "@deepseek-ai/dsh-session";
+import { settingsNamespace } from "@deepseek-ai/dsh-settings";
 import z from "@deepseek-ai/schemastery";
 import { LlmAdapter, LlmError, resolveRetryPolicy } from "@deepseek-ai/dsh-llm";
 import { createHash } from "node:crypto";
@@ -27,7 +28,7 @@ import { createInterface } from "readline";
 import { StringDecoder } from "string_decoder";
 import { AsyncLocalStorage } from "async_hooks";
 import { cwd } from "process";
-import ZD from "node:os";
+import ZD, { homedir as homedir$1 } from "node:os";
 import sE from "node:process";
 import { scrubbedParentEnv } from "@deepseek-ai/dsh-subprocess";
 import { EventEmitter as EventEmitter$1 } from "node:events";
@@ -49,7 +50,7 @@ function asNativeAgentError(error, code, message) {
 //#endregion
 //#region src/request.ts
 function conversationMessages(messages) {
-	return messages.filter((message) => message.role === "user" && (message.source.kind === "user" || message.source.kind === "coordinator"));
+	return messages.filter((message) => message.role === "user" && message.source.kind === "user");
 }
 /** Whether a missing binding may create the conversation represented by this request. */
 function initialConversationAllowed(options) {
@@ -109,6 +110,8 @@ function closeBlocks(blocks) {
 var NativeLlmAdapter = class extends LlmAdapter {
 	options;
 	active = /* @__PURE__ */ new Set();
+	appliedModels = /* @__PURE__ */ new WeakMap();
+	catalog;
 	constructor(options) {
 		super();
 		this.options = options;
@@ -122,12 +125,26 @@ var NativeLlmAdapter = class extends LlmAdapter {
 	providerRetryPolicy(_provider) {
 		return NO_RETRY_POLICY;
 	}
-	resolveModel(provider, model) {
-		return Promise.resolve({
+	async listModels(provider) {
+		return (await this.catalogFor()).models.map((model) => ({
 			provider,
-			id: model,
-			name: model === "default" ? "Native default" : model,
+			id: model.id,
+			name: model.name,
+			...model.description === void 0 ? {} : { description: model.description },
 			inputModalities: ["text"]
+		}));
+	}
+	resolveModel(provider, model) {
+		return this.catalogFor().then((catalog) => {
+			const found = catalog.models.find((candidate) => candidate.id === model);
+			return {
+				provider,
+				id: model,
+				name: found?.name ?? (model === "default" ? "Native default" : model),
+				...found?.description === void 0 ? {} : { description: found.description },
+				...found?.contextWindow === void 0 ? {} : { context: { contextWindow: found.contextWindow } },
+				inputModalities: ["text"]
+			};
 		});
 	}
 	async prepareCall(provider, model, _signal) {
@@ -154,6 +171,13 @@ var NativeLlmAdapter = class extends LlmAdapter {
 				allowCreate: initialConversationAllowed(options),
 				signal
 			});
+			const selectedModel = options.model === "default" ? void 0 : options.model;
+			const applied = this.appliedModels.get(runtime);
+			if (applied === void 0) this.appliedModels.set(runtime, selectedModel ?? null);
+			else if (applied !== (selectedModel ?? null)) {
+				await runtime.setModel(selectedModel);
+				this.appliedModels.set(runtime, selectedModel ?? null);
+			}
 			for await (const event of runtime.runTurn({
 				prompt,
 				signal
@@ -185,6 +209,8 @@ var NativeLlmAdapter = class extends LlmAdapter {
 					};
 					break;
 				}
+				case "tool-start":
+				case "tool-result": break;
 				case "usage":
 					yield {
 						type: "usage",
@@ -239,6 +265,19 @@ var NativeLlmAdapter = class extends LlmAdapter {
 			this.active.delete(sessionId);
 		}
 	}
+	catalogFor() {
+		const now = Date.now();
+		if (this.catalog !== void 0 && this.catalog.expiresAt > now) return this.catalog.value;
+		const value = this.options.provider.fetchCatalog().catch((error) => {
+			if (this.catalog?.value === value) this.catalog = void 0;
+			throw error;
+		});
+		this.catalog = {
+			expiresAt: now + 3e4,
+			value
+		};
+		return value;
+	}
 };
 //#endregion
 //#region src/binding-store.ts
@@ -248,7 +287,7 @@ function corrupt(sessionId, cause) {
 function validateBinding(value, sessionId) {
 	if (value === null || typeof value !== "object" || Array.isArray(value)) throw corrupt(sessionId);
 	const item = value;
-	if (item.version !== 1 || item.dshSessionId !== sessionId || item.provider !== "codex" && item.provider !== "claude-code" || item.state !== "creating" && item.state !== "ready" || typeof item.cwd !== "string" || item.cwd.length === 0 || typeof item.createdAt !== "string" || item.createdAt.length === 0 || item.nativeId !== void 0 && (typeof item.nativeId !== "string" || item.nativeId.length === 0) || item.state === "ready" && typeof item.nativeId !== "string") throw corrupt(sessionId);
+	if (item.version !== 1 || item.dshSessionId !== sessionId || typeof item.provider !== "string" || item.provider.length === 0 || item.state !== "creating" && item.state !== "ready" || typeof item.cwd !== "string" || item.cwd.length === 0 || typeof item.createdAt !== "string" || item.createdAt.length === 0 || item.nativeId !== void 0 && (typeof item.nativeId !== "string" || item.nativeId.length === 0) || item.state === "ready" && typeof item.nativeId !== "string") throw corrupt(sessionId);
 	return item;
 }
 async function syncDirectory(path) {
@@ -43644,6 +43683,156 @@ var ManagedClaudeProcess = class {
 	}
 };
 //#endregion
+//#region src/claude-models.ts
+const MANIFEST = [
+	{
+		id: "claude-opus-5",
+		name: "Opus 5",
+		description: "Latest Opus release",
+		contextWindow: 1e6,
+		minimumVersion: "2.1.219",
+		defaultPriority: 2
+	},
+	{
+		id: "claude-fable-5",
+		name: "Fable 5",
+		description: "Most powerful Claude model",
+		contextWindow: 1e6,
+		minimumVersion: "2.1.169"
+	},
+	{
+		id: "claude-opus-4-8[1m]",
+		name: "Opus 4.8 1M",
+		description: "Opus 4.8 with 1M context",
+		contextWindow: 1e6
+	},
+	{
+		id: "claude-opus-4-8",
+		name: "Opus 4.8",
+		description: "Previous Opus release",
+		contextWindow: 2e5,
+		defaultPriority: 1
+	},
+	{
+		id: "claude-sonnet-5",
+		name: "Sonnet 5",
+		description: "Best for everyday tasks",
+		contextWindow: 2e5
+	},
+	{
+		id: "claude-sonnet-5[1m]",
+		name: "Sonnet 5 1M",
+		description: "Sonnet 5 with 1M context",
+		contextWindow: 1e6
+	},
+	{
+		id: "claude-opus-4-7[1m]",
+		name: "Opus 4.7 1M",
+		description: "Opus 4.7 with 1M context",
+		contextWindow: 1e6
+	},
+	{
+		id: "claude-opus-4-7",
+		name: "Opus 4.7",
+		description: "Previous Opus release",
+		contextWindow: 2e5
+	},
+	{
+		id: "claude-opus-4-6[1m]",
+		name: "Opus 4.6 1M",
+		description: "Opus 4.6 with 1M context",
+		contextWindow: 1e6
+	},
+	{
+		id: "claude-opus-4-6",
+		name: "Opus 4.6",
+		description: "Opus for complex work",
+		contextWindow: 2e5
+	},
+	{
+		id: "claude-sonnet-4-6[1m]",
+		name: "Sonnet 4.6 1M",
+		description: "Sonnet 4.6 with 1M context",
+		contextWindow: 1e6
+	},
+	{
+		id: "claude-sonnet-4-6",
+		name: "Sonnet 4.6",
+		description: "Sonnet for everyday tasks",
+		contextWindow: 2e5
+	},
+	{
+		id: "claude-haiku-4-5",
+		name: "Haiku 4.5",
+		description: "Fastest for quick answers",
+		contextWindow: 2e5
+	}
+];
+const SETTINGS_MODEL_KEYS = [
+	"ANTHROPIC_MODEL",
+	"ANTHROPIC_SMALL_FAST_MODEL",
+	"ANTHROPIC_DEFAULT_OPUS_MODEL",
+	"ANTHROPIC_DEFAULT_SONNET_MODEL",
+	"ANTHROPIC_DEFAULT_HAIKU_MODEL"
+];
+function versionAtLeast(actual, minimum) {
+	const parts = (value) => value.split(".").map((part) => Number.parseInt(part, 10) || 0);
+	const left = parts(actual);
+	const right = parts(minimum);
+	for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+		const difference = (left[index] ?? 0) - (right[index] ?? 0);
+		if (difference !== 0) return difference > 0;
+	}
+	return true;
+}
+function record$1(value) {
+	return value !== null && typeof value === "object" && !Array.isArray(value) ? value : void 0;
+}
+async function configuredModels(configDir) {
+	let settings;
+	try {
+		settings = record$1(JSON.parse(await readFile(join(configDir, "settings.json"), "utf8")));
+	} catch (_missingOrInvalidClaudeSettings) {
+		return [];
+	}
+	if (settings === void 0) return [];
+	const entries = [{
+		value: settings.model,
+		source: "model"
+	}];
+	const env = record$1(settings.env);
+	if (env !== void 0) for (const key of SETTINGS_MODEL_KEYS) entries.push({
+		value: env[key],
+		source: `env.${key}`
+	});
+	return entries.flatMap(({ value, source }) => {
+		if (typeof value !== "string" || value.trim().length === 0) return [];
+		const id = value.trim();
+		return [{
+			id,
+			name: id,
+			description: `From Claude settings.json ${source}`
+		}];
+	});
+}
+/** Build the Claude Code catalog from the Paseo-style manifest and local settings. */
+async function claudeCatalog(version, configDir) {
+	const manifest = MANIFEST.filter((model) => model.minimumVersion === void 0 || version === void 0 || versionAtLeast(version, model.minimumVersion));
+	const models = [...manifest];
+	for (const model of await configuredModels(configDir ?? join(homedir$1(), ".claude"))) if (!models.some((candidate) => candidate.id === model.id)) models.push(model);
+	const selected = manifest.reduce((current, candidate) => (candidate.defaultPriority ?? 0) > (current?.defaultPriority ?? 0) ? candidate : current, void 0);
+	return {
+		models: models.map((model) => ({
+			id: model.id,
+			name: model.name,
+			...model.description === void 0 ? {} : { description: model.description },
+			...model.contextWindow === void 0 ? {} : { contextWindow: model.contextWindow },
+			...model.id === selected?.id ? { isDefault: true } : {}
+		})),
+		...selected === void 0 ? {} : { defaultModel: selected.id }
+	};
+}
+//#endregion
 //#region src/native.ts
 /** Single-consumer async event queue used by resident provider protocols. */
 var AsyncEventQueue = class {
@@ -43703,6 +43892,14 @@ function record(value) {
 function finite$1(value) {
 	return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : void 0;
 }
+function jsonValue$1(value) {
+	try {
+		const copy = JSON.parse(JSON.stringify(value));
+		return copy === void 0 ? null : copy;
+	} catch {
+		return String(value);
+	}
+}
 function usage(message) {
 	const source = record(message.usage);
 	if (source === void 0) return void 0;
@@ -43754,6 +43951,10 @@ var ClaudeRuntime = class {
 	}
 	get nativeId() {
 		return this.sessionId;
+	}
+	async setModel(model) {
+		if (this.closed) throw new NativeAgentError("NATIVE_RUNTIME_CLOSED", "native-agents: Claude runtime is closed");
+		await this.operation.setModel(model);
 	}
 	async *runTurn(input) {
 		input.signal.throwIfAborted();
@@ -43821,6 +44022,22 @@ var ClaudeRuntime = class {
 		this.captureIdentity(message);
 		const active = this.active;
 		if (active === void 0) return;
+		const content = record(message.message)?.content;
+		if (Array.isArray(content)) for (const block of content) {
+			const item = record(block);
+			if (item?.type === "tool_use" && typeof item.id === "string" && typeof item.name === "string") active.events.push({
+				type: "tool-start",
+				callId: item.id,
+				name: item.name,
+				input: jsonValue$1(item.input)
+			});
+			else if (item?.type === "tool_result" && typeof item.tool_use_id === "string") active.events.push({
+				type: "tool-result",
+				callId: item.tool_use_id,
+				..."content" in item ? { output: jsonValue$1(item.content) } : {},
+				...item.is_error === true ? { error: "Claude Code tool returned an error" } : {}
+			});
+		}
 		if (message.type === "stream_event") {
 			const event = record(message.event);
 			const delta = record(event?.delta);
@@ -43889,15 +44106,55 @@ var ClaudeRuntime = class {
 var ClaudeProvider = class {
 	options;
 	id = "claude-code";
-	displayName = "Native Claude Code";
+	route = "native-claude-code";
+	displayName = "Claude Code (Local)";
 	constructor(options) {
 		this.options = options;
+	}
+	async discover(signal = new AbortController().signal) {
+		try {
+			return {
+				state: "available",
+				version: await this.resolveVersion(signal)
+			};
+		} catch (error) {
+			return {
+				state: "unavailable",
+				reason: error instanceof Error ? error.message : String(error)
+			};
+		}
+	}
+	async fetchCatalog(signal = new AbortController().signal) {
+		return await claudeCatalog(await this.resolveVersion(signal), this.options.env.CLAUDE_CONFIG_DIR);
 	}
 	create(input) {
 		return this.open(input);
 	}
 	resume(input) {
 		return this.open(input, input.nativeId);
+	}
+	async resolveVersion(signal) {
+		const executable = await this.options.resolveExecutable("claude", this.options.env, signal);
+		const child = this.options.spawn({
+			argv: [executable, "--version"],
+			cwd: process.cwd(),
+			stdio: {
+				stdin: "ignore",
+				stdout: { maxBytes: 8192 },
+				stderr: { maxBytes: 8192 }
+			},
+			graceMs: this.options.graceMs,
+			signal,
+			env: this.options.env
+		});
+		if ((await child.done).exitCode !== 0) {
+			const detail = child.collected.stderr?.readFrom(0).text.trim();
+			throw new NativeAgentError("NATIVE_DISCOVERY_FAILED", detail || "Claude Code version probe failed");
+		}
+		const output = child.collected.stdout?.readFrom(0).text.trim() ?? "";
+		const match = /\d+\.\d+\.\d+/.exec(output);
+		if (match === null) throw new NativeAgentError("NATIVE_DISCOVERY_FAILED", "Claude Code returned no version");
+		return match[0];
 	}
 	async open(input, resume) {
 		input.signal.throwIfAborted();
@@ -43948,10 +44205,19 @@ function text(value, label) {
 function finite(value) {
 	return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : void 0;
 }
+function jsonValue(value) {
+	try {
+		const copy = JSON.parse(JSON.stringify(value));
+		return copy === void 0 ? null : copy;
+	} catch {
+		return String(value);
+	}
+}
 /** Resident Codex app-server connection for one persistent thread. */
 var CodexWire = class {
 	transport;
 	threadId;
+	model;
 	active;
 	constructor(input, output) {
 		this.transport = new JsonRpcLineTransport(input, output);
@@ -43987,11 +44253,35 @@ var CodexWire = class {
 			...model === void 0 ? {} : { model }
 		}, signal), "thread/start response").thread, "thread").id, "thread id");
 		this.threadId = id;
+		this.model = model;
 		return id;
+	}
+	async listModels(signal) {
+		const response = object(await this.transport.request("model/list", {}, signal), "model/list response");
+		const models = (Array.isArray(response.data) ? response.data : []).flatMap((value) => {
+			if (value === null || typeof value !== "object" || Array.isArray(value)) return [];
+			const entry = value;
+			if (typeof entry.id !== "string" || entry.id.length === 0) return [];
+			const name = typeof entry.displayName === "string" && entry.displayName.length > 0 ? entry.displayName : entry.id;
+			return [{
+				id: entry.id,
+				name,
+				...typeof entry.description === "string" ? { description: entry.description } : {},
+				...entry.isDefault === true ? { isDefault: true } : {}
+			}];
+		});
+		const defaultModel = models.find((model) => model.isDefault)?.id;
+		return {
+			models,
+			...defaultModel === void 0 ? {} : { defaultModel }
+		};
 	}
 	async resumeThread(threadId, signal) {
 		if (text(object(object(await this.transport.request("thread/resume", { threadId }, signal), "thread/resume response").thread, "thread").id, "thread id") !== threadId) throw new NativeAgentError("NATIVE_BINDING_CORRUPT", "native-agents: Codex resumed an unexpected thread");
 		this.threadId = threadId;
+	}
+	setModel(model) {
+		this.model = model;
 	}
 	async *runTurn(prompt, signal) {
 		signal.throwIfAborted();
@@ -44016,7 +44306,8 @@ var CodexWire = class {
 					type: "text",
 					text: prompt,
 					text_elements: []
-				}]
+				}],
+				...this.model === void 0 ? {} : { model: this.model }
 			}, signal), "turn/start response").turn, "turn").id, "turn id");
 			for (const notification of active.early.splice(0)) this.consumeNotification(active, notification.method, notification.params);
 			yield* events;
@@ -44078,6 +44369,34 @@ var CodexWire = class {
 		this.consumeNotification(active, method, params);
 	}
 	consumeNotification(active, method, params) {
+		if (method === "item/started" || method === "item/completed") {
+			const item = params.item === null || typeof params.item !== "object" ? void 0 : params.item;
+			const itemId = typeof item?.id === "string" ? item.id : void 0;
+			const itemType = typeof item?.type === "string" ? item.type : void 0;
+			if (item !== void 0 && itemId !== void 0 && itemType !== void 0 && itemType !== "agentMessage" && itemType !== "reasoning") {
+				if (method === "item/started") {
+					const name = typeof item.name === "string" ? item.name : typeof item.command === "string" ? item.command : itemType;
+					active.events.push({
+						type: "tool-start",
+						callId: itemId,
+						name,
+						input: jsonValue(item.input ?? item.command ?? item)
+					});
+				} else active.events.push({
+					type: "tool-result",
+					callId: itemId,
+					...item.output === void 0 ? {} : { output: jsonValue(item.output) },
+					...item.error === void 0 ? {} : { error: String(item.error) }
+				});
+			}
+			if (method === "item/completed") {
+				const completed = object(params.item, "completed item");
+				if (completed.type === "agentMessage" && typeof completed.text === "string" && completed.text.length > 0) {
+					if (completed.phase === "final_answer" || completed.phase === null && active.answer === void 0) active.answer = completed.text;
+				}
+			}
+			return;
+		}
 		if (method === "item/agentMessage/delta") {
 			if (typeof params.delta === "string" && params.delta.length > 0) {
 				active.streamedText = true;
@@ -44111,13 +44430,6 @@ var CodexWire = class {
 						...cacheReadTokens === void 0 ? {} : { cacheReadTokens }
 					}
 				};
-			}
-			return;
-		}
-		if (method === "item/completed" && params.turnId === active.turnId) {
-			const item = object(params.item, "completed item");
-			if (item.type === "agentMessage" && typeof item.text === "string" && item.text.length > 0) {
-				if (item.phase === "final_answer" || item.phase === null && active.answer === void 0) active.answer = item.text;
 			}
 			return;
 		}
@@ -44181,6 +44493,11 @@ var CodexRuntime = class {
 	get nativeId() {
 		return this.wire.nativeId;
 	}
+	setModel(model) {
+		if (this.closed) return Promise.reject(new NativeAgentError("NATIVE_RUNTIME_CLOSED", "native-agents: Codex runtime is closed"));
+		this.wire.setModel(model);
+		return Promise.resolve();
+	}
 	runTurn(input) {
 		if (this.closed) throw new NativeAgentError("NATIVE_RUNTIME_CLOSED", "native-agents: Codex runtime is closed");
 		return this.wire.runTurn(input.prompt, input.signal);
@@ -44203,9 +44520,32 @@ var CodexRuntime = class {
 var CodexProvider = class {
 	options;
 	id = "codex";
-	displayName = "Native Codex";
+	route = "native-codex";
+	displayName = "Codex (Local)";
 	constructor(options) {
 		this.options = options;
+	}
+	async discover(signal = new AbortController().signal) {
+		try {
+			await this.options.resolveExecutable("codex", this.options.env, signal);
+			return { state: "available" };
+		} catch (error) {
+			return {
+				state: "unavailable",
+				reason: error instanceof Error ? error.message : String(error)
+			};
+		}
+	}
+	async fetchCatalog(signal = new AbortController().signal) {
+		const { child, wire } = await this.openWire(process.cwd(), signal);
+		try {
+			return await wire.listModels(signal);
+		} finally {
+			wire.close();
+			child.terminate();
+			await child.waitForExit();
+			await child.done.catch(() => {});
+		}
 	}
 	create(input) {
 		return this.open(input);
@@ -44215,10 +44555,29 @@ var CodexProvider = class {
 	}
 	async open(input, nativeId) {
 		input.signal.throwIfAborted();
-		const command = await this.options.resolveExecutable("codex", this.options.env, input.signal);
+		const { child, wire } = await this.openWire(input.cwd, input.signal);
+		const exited = child.done.then((outcome) => {
+			throw new NativeAgentError("NATIVE_PROCESS_FAILURE", `native-agents: Codex app-server exited during initialization (exit ${String(outcome.exitCode)})`);
+		});
+		try {
+			wire.setModel(input.model);
+			if (nativeId === void 0) await Promise.race([wire.createThread(input.cwd, permission(this.options.permissionMode), input.model, input.signal), exited]);
+			else await Promise.race([wire.resumeThread(nativeId, input.signal), exited]);
+			return new CodexRuntime(wire, child);
+		} catch (error) {
+			wire.close();
+			child.terminate();
+			await child.waitForExit();
+			await child.done.catch(() => {});
+			throw error;
+		}
+	}
+	async openWire(cwd, signal) {
+		signal.throwIfAborted();
+		const command = await this.options.resolveExecutable("codex", this.options.env, signal);
 		const child = this.options.spawn({
 			argv: [command, "app-server"],
-			cwd: input.cwd,
+			cwd,
 			stdio: {
 				stdin: "pipe",
 				stdout: "pipe",
@@ -44237,10 +44596,11 @@ var CodexProvider = class {
 			throw new NativeAgentError("NATIVE_PROCESS_FAILURE", `native-agents: Codex app-server exited during initialization (exit ${String(outcome.exitCode)})`);
 		});
 		try {
-			await Promise.race([wire.initialize(input.signal), exited]);
-			if (nativeId === void 0) await Promise.race([wire.createThread(input.cwd, permission(this.options.permissionMode), input.model, input.signal), exited]);
-			else await Promise.race([wire.resumeThread(nativeId, input.signal), exited]);
-			return new CodexRuntime(wire, child);
+			await Promise.race([wire.initialize(signal), exited]);
+			return {
+				child,
+				wire
+			};
 		} catch (error) {
 			wire.close();
 			child.terminate();
@@ -44298,6 +44658,15 @@ var NativeRuntimeRegistry = class {
 			await runtime.close();
 		}));
 	}
+	/** Close resident runtimes while keeping this registry available for re-enable. */
+	async releaseAll() {
+		if (this.closed) return;
+		const runtimes = [...this.runtimes.values()];
+		this.runtimes.clear();
+		await Promise.allSettled(runtimes.map(async (runtime) => {
+			await runtime.close();
+		}));
+	}
 	async open(input) {
 		if (await this.store.read(input.dshSessionId) === void 0) {
 			if (!input.allowCreate) throw new NativeAgentError("NATIVE_BINDING_MISSING", `native-agents: binding for DSH session ${JSON.stringify(input.dshSessionId)} is missing`);
@@ -44328,8 +44697,14 @@ const name = "native-agents";
 const inject = [
 	"agents",
 	"llm",
+	"settings",
 	"subprocess"
 ];
+const SETTINGS_NAMESPACE = settingsNamespace("native-agents");
+const NativeAgentsSettingsSchema = z.object({ providers: z.object({
+	"native-codex": z.object({ enabled: z.boolean() }),
+	"native-claude-code": z.object({ enabled: z.boolean() })
+}) });
 const Config = z.object({
 	dshHome: z.string(),
 	storageRoot: z.string(),
@@ -44359,44 +44734,74 @@ function apply(ctx, config = {}) {
 		if (cwd === void 0) throw new NativeAgentError("NATIVE_CWD_REQUIRED", `native-agents: DSH session ${JSON.stringify(sessionId)} has no live working directory`);
 		return cwd;
 	};
-	if (config.codex?.enabled ?? true) {
-		const provider = new CodexProvider({
-			permissionMode: config.codex?.permissionMode ?? "never",
-			env: config.codex?.env ?? {},
-			graceMs: grace(config.codex?.disposeGraceMs, "codex.disposeGraceMs"),
-			resolveExecutable: (command, env, signal) => ctx.subprocess.resolveExecutable(command, env, signal),
-			spawn: (spec) => ctx.subprocess.spawn(spec)
-		});
+	const providers = [new CodexProvider({
+		permissionMode: config.codex?.permissionMode ?? "never",
+		env: config.codex?.env ?? {},
+		graceMs: grace(config.codex?.disposeGraceMs, "codex.disposeGraceMs"),
+		resolveExecutable: (command, env, signal) => ctx.subprocess.resolveExecutable(command, env, signal),
+		spawn: (spec) => ctx.subprocess.spawn(spec)
+	}), new ClaudeProvider({
+		permissionMode: config.claudeCode?.permissionMode ?? "dontAsk",
+		env: config.claudeCode?.env ?? {},
+		graceMs: grace(config.claudeCode?.disposeGraceMs, "claudeCode.disposeGraceMs"),
+		resolveExecutable: (command, env, signal) => ctx.subprocess.resolveExecutable(command, env, signal),
+		spawn: (spec) => ctx.subprocess.spawn(spec)
+	})].map((provider) => {
 		const registry = new NativeRuntimeRegistry(provider, store);
-		ctx.effect(() => async () => {
-			await registry.closeAll();
-		}, "native-agents: close Codex runtimes");
-		ctx.llm.registerAdapter(["native-codex"], new NativeLlmAdapter({
-			route: "native-codex",
+		return {
 			provider,
 			registry,
-			resolveCwd
-		}));
-	}
-	if (config.claudeCode?.enabled ?? true) {
-		const provider = new ClaudeProvider({
-			permissionMode: config.claudeCode?.permissionMode ?? "dontAsk",
-			env: config.claudeCode?.env ?? {},
-			graceMs: grace(config.claudeCode?.disposeGraceMs, "claudeCode.disposeGraceMs"),
-			resolveExecutable: (command, env, signal) => ctx.subprocess.resolveExecutable(command, env, signal),
-			spawn: (spec) => ctx.subprocess.spawn(spec)
-		});
-		const registry = new NativeRuntimeRegistry(provider, store);
+			adapter: new NativeLlmAdapter({
+				route: provider.route,
+				provider,
+				registry,
+				resolveCwd
+			}),
+			registration: void 0,
+			enabled: false
+		};
+	});
+	ctx.llm.registerConfigurableProviders(providers.map(({ provider }) => ({
+		provider: provider.route,
+		displayName: provider.displayName,
+		settingsNs: SETTINGS_NAMESPACE,
+		settingsPath: ["providers", provider.route],
+		declared: false
+	})));
+	const settings = ctx.settings.register(SETTINGS_NAMESPACE, NativeAgentsSettingsSchema, {
+		base: { providers: {
+			"native-codex": { enabled: config.codex?.enabled ?? true },
+			"native-claude-code": { enabled: config.claudeCode?.enabled ?? true }
+		} },
+		applies: "live"
+	});
+	const enable = (entry) => {
+		if (entry.enabled) return;
+		if (entry.registration === void 0) entry.registration = ctx.llm.registerAdapter([entry.provider.route], entry.adapter);
+		else entry.registration.replace([entry.provider.route]);
+		entry.enabled = true;
+	};
+	const disable = async (entry) => {
+		if (!entry.enabled) return;
+		entry.registration?.replace([]);
+		entry.enabled = false;
+		await entry.registry.releaseAll();
+	};
+	const desired = (value, route) => value.providers[route].enabled;
+	for (const entry of providers) {
+		if (desired(settings.get(), entry.provider.route)) enable(entry);
 		ctx.effect(() => async () => {
-			await registry.closeAll();
-		}, "native-agents: close Claude runtimes");
-		ctx.llm.registerAdapter(["native-claude-code"], new NativeLlmAdapter({
-			route: "native-claude-code",
-			provider,
-			registry,
-			resolveCwd
-		}));
+			await entry.registry.closeAll();
+		}, `native-agents: close ${entry.provider.id} runtimes`);
 	}
+	let reconciliation = Promise.resolve();
+	ctx.effect(() => settings.watch((next) => {
+		reconciliation = reconciliation.then(async () => {
+			for (const entry of providers) if (desired(next, entry.provider.route)) enable(entry);
+			else await disable(entry);
+		});
+		return reconciliation;
+	}), "native-agents: provider enablement");
 }
 //#endregion
 export { BindingStore, Config, apply, inject, name };

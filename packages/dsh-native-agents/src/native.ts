@@ -1,7 +1,25 @@
 import type { TokenUsage } from '@deepseek-ai/dsh-llm'
-import type { NativeProvider as NativeProviderId } from './binding-store.js'
+import type { JsonValue } from '@deepseek-ai/dsh-session'
 
-export type { NativeProviderId }
+export type NativeProviderId = string
+
+export interface NativeModel {
+  readonly id: string
+  readonly name: string
+  readonly description?: string
+  readonly contextWindow?: number
+  readonly isDefault?: boolean
+}
+
+export interface NativeCatalog {
+  readonly models: readonly NativeModel[]
+  readonly defaultModel?: string
+}
+
+export type NativeProviderStatus =
+  | { readonly state: 'available'; readonly version?: string }
+  | { readonly state: 'unavailable'; readonly reason: string }
+  | { readonly state: 'error'; readonly message: string }
 
 export interface NativeFailure {
   readonly code: string
@@ -12,6 +30,8 @@ export type NativeEvent =
   | { readonly type: 'thread-started'; readonly nativeId: string }
   | { readonly type: 'text-delta'; readonly text: string }
   | { readonly type: 'reasoning-delta'; readonly text: string }
+  | { readonly type: 'tool-start'; readonly callId: string; readonly name: string; readonly input: JsonValue }
+  | { readonly type: 'tool-result'; readonly callId: string; readonly output?: JsonValue; readonly error?: string }
   | { readonly type: 'usage'; readonly usage: TokenUsage }
   | { readonly type: 'turn-completed'; readonly nativeTurnId?: string }
   | { readonly type: 'turn-failed'; readonly failure: NativeFailure }
@@ -39,6 +59,7 @@ export interface NativeTurnInput {
 export interface NativeRuntime {
   readonly provider: NativeProviderId
   readonly nativeId: string | null
+  setModel(model: string | undefined): Promise<void>
   runTurn(input: NativeTurnInput): AsyncIterable<NativeEvent>
   interrupt(): Promise<void>
   close(): Promise<void>
@@ -47,7 +68,10 @@ export interface NativeRuntime {
 /** Creates and resumes live conversations for one native provider. */
 export interface NativeProvider {
   readonly id: NativeProviderId
+  readonly route: string
   readonly displayName: string
+  discover(signal?: AbortSignal): Promise<NativeProviderStatus>
+  fetchCatalog(signal?: AbortSignal): Promise<NativeCatalog>
   create(input: NativeCreateRuntimeInput): Promise<NativeRuntime>
   resume(input: NativeResumeRuntimeInput): Promise<NativeRuntime>
 }

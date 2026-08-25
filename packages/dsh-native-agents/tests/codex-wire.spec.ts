@@ -18,6 +18,7 @@ describe('CodexWire', () => {
     const wire = new CodexWire(serverOutput, clientOutput)
     const methods: string[] = []
     let turn = 0
+    const turnParams: Frame[] = []
     let buffer = ''
     const send = (frame: Frame): void => { serverOutput.write(`${JSON.stringify(frame)}\n`) }
     clientOutput.on('data', (chunk: Buffer) => {
@@ -36,6 +37,7 @@ describe('CodexWire', () => {
         } else if (frame.method === 'thread/start') {
           send({ jsonrpc: '2.0', id: frame.id, result: { thread: { id: 'thread-1' } } })
         } else if (frame.method === 'turn/start') {
+          turnParams.push(frame.params as Frame)
           turn += 1
           const turnId = `turn-${turn}`
           send({ jsonrpc: '2.0', id: frame.id, result: { turn: { id: turnId } } })
@@ -51,6 +53,16 @@ describe('CodexWire', () => {
           })
           send({
             jsonrpc: '2.0',
+            method: 'item/started',
+            params: { threadId: 'thread-1', turnId, item: { id: `tool-${turn}`, type: 'commandExecution', command: 'pwd' } },
+          })
+          send({
+            jsonrpc: '2.0',
+            method: 'item/completed',
+            params: { threadId: 'thread-1', turnId, item: { id: `tool-${turn}`, type: 'commandExecution', command: 'pwd', output: '/work' } },
+          })
+          send({
+            jsonrpc: '2.0',
             method: 'turn/completed',
             params: { threadId: 'thread-1', turn: { id: turnId, status: 'completed' } },
           })
@@ -63,13 +75,17 @@ describe('CodexWire', () => {
     await wire.createThread('/work', { approvalPolicy: 'never' }, undefined, signal)
 
     const first = await collect(wire.runTurn('first', signal))
+    wire.setModel('gpt-test-codex')
     const second = await collect(wire.runTurn('second', signal))
 
     expect(first).toContainEqual({ type: 'reasoning-delta', text: 'thinking' })
     expect(first).toContainEqual({ type: 'text-delta', text: 'answer 1' })
+    expect(first).toContainEqual({ type: 'tool-start', callId: 'tool-1', name: 'pwd', input: 'pwd' })
+    expect(first).toContainEqual({ type: 'tool-result', callId: 'tool-1', output: '/work' })
     expect(second).toContainEqual({ type: 'turn-completed', nativeTurnId: 'turn-2' })
     expect(methods.filter(method => method === 'thread/start')).toHaveLength(1)
     expect(methods.filter(method => method === 'turn/start')).toHaveLength(2)
+    expect(turnParams[1]).toMatchObject({ model: 'gpt-test-codex' })
     wire.close()
   })
 

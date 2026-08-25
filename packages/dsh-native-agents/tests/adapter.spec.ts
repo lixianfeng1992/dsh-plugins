@@ -48,10 +48,16 @@ class FakeRuntime implements NativeRuntime {
   readonly provider = 'codex' as const
   nativeId: string | null
   readonly prompts: string[] = []
+  readonly models: Array<string | undefined> = []
   closed = false
 
   constructor(nativeId: string | null) {
     this.nativeId = nativeId
+  }
+
+  setModel(model: string | undefined): Promise<void> {
+    this.models.push(model)
+    return Promise.resolve()
   }
 
   async * runTurn(input: NativeTurnInput): AsyncIterable<NativeEvent> {
@@ -76,6 +82,19 @@ class FakeRuntime implements NativeRuntime {
   }
 }
 
+function fakeProvider(overrides: Partial<NativeProvider> = {}): NativeProvider {
+  return {
+    id: 'codex',
+    route: 'native-codex',
+    displayName: 'Codex (Local)',
+    discover: async () => ({ state: 'available' }),
+    fetchCatalog: async () => ({ models: [{ id: 'default', name: 'Native default' }] }),
+    create: async () => { throw new Error('unexpected create') },
+    resume: async () => { throw new Error('unexpected resume') },
+    ...overrides,
+  }
+}
+
 function adapter(provider: NativeProvider, store: BindingStore): NativeLlmAdapter {
   return new NativeLlmAdapter({
     route: 'native-codex',
@@ -87,12 +106,10 @@ function adapter(provider: NativeProvider, store: BindingStore): NativeLlmAdapte
 
 describe('NativeLlmAdapter', () => {
   it('owns the prepared-call entry point required by source-launched DSH', async () => {
-    const provider: NativeProvider = {
-      id: 'codex',
-      displayName: 'Native Codex',
+    const provider = fakeProvider({
       create: vi.fn(),
       resume: vi.fn(),
-    }
+    })
     const prepared = await adapter(provider, {} as BindingStore).prepareCall('native-codex', 'default')
     expect(Object.hasOwn(NativeLlmAdapter.prototype, 'prepareCall')).toBe(true)
     expect(prepared.model).toMatchObject({ provider: 'native-codex', id: 'default' })
@@ -101,12 +118,10 @@ describe('NativeLlmAdapter', () => {
   it('creates once, streams events, and reuses the live runtime', async () => {
     const root = await mkdtemp(join(tmpdir(), 'native-agents-'))
     const runtime = new FakeRuntime(null)
-    const provider: NativeProvider = {
-      id: 'codex',
-      displayName: 'Native Codex',
+    const provider = fakeProvider({
       create: vi.fn(async () => runtime),
       resume: vi.fn(),
-    }
+    })
     const native = adapter(provider, new BindingStore(root))
 
     const created = await collect(native.stream(request([user('remember alpha')])))
@@ -134,12 +149,10 @@ describe('NativeLlmAdapter', () => {
     await store.create({ dshSessionId: 'child', provider: 'codex', cwd: '/work' })
     await store.markReady('child', 'codex', 'native-1')
     const runtime = new FakeRuntime('native-1')
-    const provider: NativeProvider = {
-      id: 'codex',
-      displayName: 'Native Codex',
+    const provider = fakeProvider({
       create: vi.fn(),
       resume: vi.fn(async () => runtime),
-    }
+    })
 
     await collect(adapter(provider, store).stream(request([
       user('first'),
@@ -153,12 +166,10 @@ describe('NativeLlmAdapter', () => {
 
   it('does not recreate a missing conversation for later history', async () => {
     const root = await mkdtemp(join(tmpdir(), 'native-agents-'))
-    const provider: NativeProvider = {
-      id: 'codex',
-      displayName: 'Native Codex',
+    const provider = fakeProvider({
       create: vi.fn(),
       resume: vi.fn(),
-    }
+    })
 
     await expect(collect(adapter(provider, new BindingStore(root)).stream(
       request([user('first'), user('later')]),
@@ -167,7 +178,7 @@ describe('NativeLlmAdapter', () => {
   })
 
   it('disables automatic retries for side-effecting native turns', () => {
-    const provider = { id: 'codex', displayName: 'Native Codex' } as NativeProvider
+    const provider = fakeProvider()
     expect(adapter(provider, {} as BindingStore).providerRetryPolicy('native-codex')).toMatchObject({
       mode: 'normal',
       maxRetries: 0,

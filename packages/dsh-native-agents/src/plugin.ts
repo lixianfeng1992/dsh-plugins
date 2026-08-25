@@ -4,6 +4,7 @@ import type {} from '@deepseek-ai/dsh-agent'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-subprocess'
+import { settingsNamespace } from '@deepseek-ai/dsh-settings'
 import z from '@deepseek-ai/schemastery'
 import { NativeLlmAdapter } from './adapter.js'
 import { BindingStore } from './binding-store.js'
@@ -13,7 +14,23 @@ import { NativeAgentError } from './error.js'
 import { NativeRuntimeRegistry } from './runtime-registry.js'
 
 export const name = 'native-agents'
-export const inject = ['agents', 'llm', 'subprocess']
+export const inject = ['agents', 'llm', 'settings', 'subprocess']
+
+const SETTINGS_NAMESPACE = settingsNamespace('native-agents')
+
+interface NativeAgentsSettings {
+  providers: {
+    'native-codex': { enabled: boolean }
+    'native-claude-code': { enabled: boolean }
+  }
+}
+
+const NativeAgentsSettingsSchema: z<NativeAgentsSettings> = z.object({
+  providers: z.object({
+    'native-codex': z.object({ enabled: z.boolean() }),
+    'native-claude-code': z.object({ enabled: z.boolean() }),
+  }),
+})
 
 interface CodexConfig {
   enabled?: boolean
@@ -79,39 +96,87 @@ export function apply(ctx: Context, config: Config = {}): void {
     return cwd
   }
 
-  if (config.codex?.enabled ?? true) {
-    const provider = new CodexProvider({
-      permissionMode: config.codex?.permissionMode ?? 'never',
-      env: config.codex?.env ?? {},
-      graceMs: grace(config.codex?.disposeGraceMs, 'codex.disposeGraceMs'),
-      resolveExecutable: (command, env, signal) => ctx.subprocess.resolveExecutable(command, env, signal),
-      spawn: spec => ctx.subprocess.spawn(spec),
-    })
+  const codex = new CodexProvider({
+    permissionMode: config.codex?.permissionMode ?? 'never',
+    env: config.codex?.env ?? {},
+    graceMs: grace(config.codex?.disposeGraceMs, 'codex.disposeGraceMs'),
+    resolveExecutable: (command, env, signal) => ctx.subprocess.resolveExecutable(command, env, signal),
+    spawn: spec => ctx.subprocess.spawn(spec),
+  })
+  const claudeCode = new ClaudeProvider({
+    permissionMode: config.claudeCode?.permissionMode ?? 'dontAsk',
+    env: config.claudeCode?.env ?? {},
+    graceMs: grace(config.claudeCode?.disposeGraceMs, 'claudeCode.disposeGraceMs'),
+    resolveExecutable: (command, env, signal) => ctx.subprocess.resolveExecutable(command, env, signal),
+    spawn: spec => ctx.subprocess.spawn(spec),
+  })
+
+  const providers = [codex, claudeCode].map((provider) => {
     const registry = new NativeRuntimeRegistry(provider, store)
-    ctx.effect(() => async () => { await registry.closeAll() }, 'native-agents: close Codex runtimes')
-    ctx.llm.registerAdapter(['native-codex'], new NativeLlmAdapter({
-      route: 'native-codex',
+    const adapter = new NativeLlmAdapter({
+      route: provider.route,
       provider,
       registry,
       resolveCwd,
-    }))
+    })
+    return {
+      provider,
+      registry,
+      adapter,
+      registration: undefined as undefined | { replace(routes: string[]): void },
+      enabled: false,
+    }
+  })
+
+  ctx.llm.registerConfigurableProviders(providers.map(({ provider }) => ({
+    provider: provider.route,
+    displayName: provider.displayName,
+    settingsNs: SETTINGS_NAMESPACE,
+    settingsPath: ['providers', provider.route],
+    declared: false,
+  })))
+
+  const settings = ctx.settings.register(SETTINGS_NAMESPACE, NativeAgentsSettingsSchema, {
+    base: {
+      providers: {
+        'native-codex': { enabled: config.codex?.enabled ?? true },
+        'native-claude-code': { enabled: config.claudeCode?.enabled ?? true },
+      },
+    },
+    applies: 'live',
+  })
+
+  const enable = (entry: typeof providers[number]): void => {
+    if (entry.enabled) return
+    if (entry.registration === undefined) {
+      entry.registration = ctx.llm.registerAdapter([entry.provider.route], entry.adapter)
+    } else {
+      entry.registration.replace([entry.provider.route])
+    }
+    entry.enabled = true
+  }
+  const disable = async (entry: typeof providers[number]): Promise<void> => {
+    if (!entry.enabled) return
+    entry.registration?.replace([])
+    entry.enabled = false
+    await entry.registry.releaseAll()
+  }
+  const desired = (value: NativeAgentsSettings, route: string): boolean =>
+    value.providers[route as keyof NativeAgentsSettings['providers']].enabled
+
+  for (const entry of providers) {
+    if (desired(settings.get(), entry.provider.route)) enable(entry)
+    ctx.effect(() => async () => { await entry.registry.closeAll() }, `native-agents: close ${entry.provider.id} runtimes`)
   }
 
-  if (config.claudeCode?.enabled ?? true) {
-    const provider = new ClaudeProvider({
-      permissionMode: config.claudeCode?.permissionMode ?? 'dontAsk',
-      env: config.claudeCode?.env ?? {},
-      graceMs: grace(config.claudeCode?.disposeGraceMs, 'claudeCode.disposeGraceMs'),
-      resolveExecutable: (command, env, signal) => ctx.subprocess.resolveExecutable(command, env, signal),
-      spawn: spec => ctx.subprocess.spawn(spec),
+  let reconciliation = Promise.resolve()
+  ctx.effect(() => settings.watch((next) => {
+    reconciliation = reconciliation.then(async () => {
+      for (const entry of providers) {
+        if (desired(next, entry.provider.route)) enable(entry)
+        else await disable(entry)
+      }
     })
-    const registry = new NativeRuntimeRegistry(provider, store)
-    ctx.effect(() => async () => { await registry.closeAll() }, 'native-agents: close Claude runtimes')
-    ctx.llm.registerAdapter(['native-claude-code'], new NativeLlmAdapter({
-      route: 'native-claude-code',
-      provider,
-      registry,
-      resolveCwd,
-    }))
-  }
+    return reconciliation
+  }), 'native-agents: provider enablement')
 }

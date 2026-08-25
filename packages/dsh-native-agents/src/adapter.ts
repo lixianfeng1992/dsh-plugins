@@ -5,12 +5,13 @@ import {
   type ContentBlock,
   type GenerateOptions,
   type LlmProviderInfo,
+  type LlmModelInfo,
   type LlmResolvedModelInfo,
   type ResolvedRetryPolicy,
   type StreamChunk,
 } from '@deepseek-ai/dsh-llm'
 import { asNativeAgentError, NativeAgentError } from './error.js'
-import type { NativeEvent, NativeProvider, NativeRuntime } from './native.js'
+import type { NativeCatalog, NativeEvent, NativeProvider, NativeRuntime } from './native.js'
 import { initialConversationAllowed, projectNativePrompt } from './request.js'
 import { NativeRuntimeRegistry } from './runtime-registry.js'
 
@@ -59,6 +60,8 @@ function closeBlocks(
 /** DSH LLM adapter that projects one resident native provider runtime. */
 export class NativeLlmAdapter extends LlmAdapter {
   private readonly active = new Set<string>()
+  private readonly appliedModels = new WeakMap<NativeRuntime, string | null>()
+  private catalog: { expiresAt: number; value: Promise<NativeCatalog> } | undefined
 
   constructor(private readonly options: NativeLlmAdapterOptions) {
     super()
@@ -72,12 +75,28 @@ export class NativeLlmAdapter extends LlmAdapter {
     return NO_RETRY_POLICY
   }
 
-  override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
-    return Promise.resolve({
+  override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
+    const catalog = await this.catalogFor()
+    return catalog.models.map(model => ({
       provider,
-      id: model,
-      name: model === 'default' ? 'Native default' : model,
+      id: model.id,
+      name: model.name,
+      ...model.description === undefined ? {} : { description: model.description },
       inputModalities: ['text'],
+    }))
+  }
+
+  override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
+    return this.catalogFor().then((catalog) => {
+      const found = catalog.models.find(candidate => candidate.id === model)
+      return {
+        provider,
+        id: model,
+        name: found?.name ?? (model === 'default' ? 'Native default' : model),
+        ...found?.description === undefined ? {} : { description: found.description },
+        ...found?.contextWindow === undefined ? {} : { context: { contextWindow: found.contextWindow } },
+        inputModalities: ['text'],
+      }
     })
   }
 
@@ -115,6 +134,14 @@ export class NativeLlmAdapter extends LlmAdapter {
         allowCreate: initialConversationAllowed(options),
         signal,
       })
+      const selectedModel = options.model === 'default' ? undefined : options.model
+      const applied = this.appliedModels.get(runtime)
+      if (applied === undefined) {
+        this.appliedModels.set(runtime, selectedModel ?? null)
+      } else if (applied !== (selectedModel ?? null)) {
+        await runtime.setModel(selectedModel)
+        this.appliedModels.set(runtime, selectedModel ?? null)
+      }
       for await (const event of runtime.runTurn({ prompt, signal })) {
         switch (event.type) {
           case 'thread-started':
@@ -133,6 +160,11 @@ export class NativeLlmAdapter extends LlmAdapter {
             yield { type: event.type, index: state.index, text: event.text }
             break
           }
+          case 'tool-start':
+          case 'tool-result':
+            // Native providers execute tools themselves. DSH has no plugin-safe
+            // session event registration API, so tool details stay provider-owned.
+            break
           case 'usage':
             yield { type: 'usage', usage: event.usage }
             break
@@ -187,5 +219,16 @@ export class NativeLlmAdapter extends LlmAdapter {
     } finally {
       this.active.delete(sessionId)
     }
+  }
+
+  private catalogFor(): Promise<NativeCatalog> {
+    const now = Date.now()
+    if (this.catalog !== undefined && this.catalog.expiresAt > now) return this.catalog.value
+    const value = this.options.provider.fetchCatalog().catch((error: unknown) => {
+      if (this.catalog?.value === value) this.catalog = undefined
+      throw error
+    })
+    this.catalog = { expiresAt: now + 30_000, value }
+    return value
   }
 }

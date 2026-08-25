@@ -3,11 +3,13 @@ import { CodexWire } from './codex-wire.js'
 import { NativeAgentError } from './error.js'
 import type {
   NativeCreateRuntimeInput,
+  NativeCatalog,
   NativeEvent,
   NativeProvider,
   NativeResumeRuntimeInput,
   NativeRuntime,
   NativeTurnInput,
+  NativeProviderStatus,
 } from './native.js'
 
 export type CodexPermissionMode = 'never' | 'dangerously-bypass-approvals-and-sandbox'
@@ -52,6 +54,14 @@ export class CodexRuntime implements NativeRuntime {
     return this.wire.nativeId
   }
 
+  setModel(model: string | undefined): Promise<void> {
+    if (this.closed) {
+      return Promise.reject(new NativeAgentError('NATIVE_RUNTIME_CLOSED', 'native-agents: Codex runtime is closed'))
+    }
+    this.wire.setModel(model)
+    return Promise.resolve()
+  }
+
   runTurn(input: NativeTurnInput): AsyncIterable<NativeEvent> {
     if (this.closed) {
       throw new NativeAgentError('NATIVE_RUNTIME_CLOSED', 'native-agents: Codex runtime is closed')
@@ -78,9 +88,31 @@ export class CodexRuntime implements NativeRuntime {
 /** Creates resident Codex runtimes through the local app-server command. */
 export class CodexProvider implements NativeProvider {
   readonly id = 'codex' as const
-  readonly displayName = 'Native Codex'
+  readonly route = 'native-codex'
+  readonly displayName = 'Codex (Local)'
 
   constructor(private readonly options: CodexProviderOptions) {}
+
+  async discover(signal = new AbortController().signal): Promise<NativeProviderStatus> {
+    try {
+      await this.options.resolveExecutable('codex', this.options.env, signal)
+      return { state: 'available' }
+    } catch (error: unknown) {
+      return { state: 'unavailable', reason: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
+  async fetchCatalog(signal = new AbortController().signal): Promise<NativeCatalog> {
+    const { child, wire } = await this.openWire(process.cwd(), signal)
+    try {
+      return await wire.listModels(signal)
+    } finally {
+      wire.close()
+      child.terminate()
+      await child.waitForExit()
+      await child.done.catch(() => {})
+    }
+  }
 
   create(input: NativeCreateRuntimeInput): Promise<NativeRuntime> {
     return this.open(input)
@@ -95,10 +127,42 @@ export class CodexProvider implements NativeProvider {
     nativeId?: string,
   ): Promise<NativeRuntime> {
     input.signal.throwIfAborted()
-    const command = await this.options.resolveExecutable('codex', this.options.env, input.signal)
+    const { child, wire } = await this.openWire(input.cwd, input.signal)
+    const exited = child.done.then(outcome => {
+      throw new NativeAgentError(
+        'NATIVE_PROCESS_FAILURE',
+        `native-agents: Codex app-server exited during initialization (exit ${String(outcome.exitCode)})`,
+      )
+    })
+    try {
+      wire.setModel(input.model)
+      if (nativeId === undefined) {
+        await Promise.race([
+          wire.createThread(input.cwd, permission(this.options.permissionMode), input.model, input.signal),
+          exited,
+        ])
+      } else {
+        await Promise.race([wire.resumeThread(nativeId, input.signal), exited])
+      }
+      return new CodexRuntime(wire, child)
+    } catch (error: unknown) {
+      wire.close()
+      child.terminate()
+      await child.waitForExit()
+      await child.done.catch(() => {})
+      throw error
+    }
+  }
+
+  private async openWire(cwd: string, signal: AbortSignal): Promise<{
+    child: SubprocessHandle
+    wire: CodexWire
+  }> {
+    signal.throwIfAborted()
+    const command = await this.options.resolveExecutable('codex', this.options.env, signal)
     const child = this.options.spawn({
       argv: [command, 'app-server'],
-      cwd: input.cwd,
+      cwd,
       stdio: { stdin: 'pipe', stdout: 'pipe', stderr: 'inherit' },
       graceMs: this.options.graceMs,
       env: this.options.env,
@@ -116,16 +180,8 @@ export class CodexProvider implements NativeProvider {
       )
     })
     try {
-      await Promise.race([wire.initialize(input.signal), exited])
-      if (nativeId === undefined) {
-        await Promise.race([
-          wire.createThread(input.cwd, permission(this.options.permissionMode), input.model, input.signal),
-          exited,
-        ])
-      } else {
-        await Promise.race([wire.resumeThread(nativeId, input.signal), exited])
-      }
-      return new CodexRuntime(wire, child)
+      await Promise.race([wire.initialize(signal), exited])
+      return { child, wire }
     } catch (error: unknown) {
       wire.close()
       child.terminate()

@@ -60,6 +60,14 @@ export class NativeRuntimeRegistry {
     await Promise.allSettled(runtimes.map(async runtime => { await runtime.close() }))
   }
 
+  /** Close resident runtimes while keeping this registry available for re-enable. */
+  async releaseAll(): Promise<void> {
+    if (this.closed) return
+    const runtimes = [...this.runtimes.values()]
+    this.runtimes.clear()
+    await Promise.allSettled(runtimes.map(async runtime => { await runtime.close() }))
+  }
+
   private async open(input: ResolveRuntimeInput): Promise<NativeRuntime> {
     const binding = await this.store.read(input.dshSessionId)
     if (binding === undefined) {

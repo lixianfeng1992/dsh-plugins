@@ -22,7 +22,7 @@ const bundle = [
   '  factory: (require) => {',
   '    var module = { exports: {} };',
   '    var exports = module.exports;',
-  source.split('\n').map(line => `    ${line}`).join('\n'),
+  source,
   '    return module.exports;',
   '  },',
   '});',

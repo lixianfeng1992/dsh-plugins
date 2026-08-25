@@ -6,6 +6,7 @@ import type { NativeEvent } from '../src/native.js'
 class FakeQuery implements AsyncIterableIterator<SDKMessage> {
   readonly close = vi.fn()
   readonly interrupt = vi.fn(async () => undefined)
+  readonly setModel = vi.fn(async () => undefined)
   private readonly messages: SDKMessage[] = []
   private waiter: (() => void) | undefined
   private ended = false
@@ -80,12 +81,28 @@ describe('ClaudeProvider', () => {
     })
     const input = prompts?.[Symbol.asyncIterator]()
     expect(input).toBeDefined()
+    await runtime.setModel('claude-sonnet-4-6')
+    expect(fake.setModel).toHaveBeenCalledWith('claude-sonnet-4-6')
 
     const first = collect(runtime.runTurn({ prompt: 'first', signal: new AbortController().signal }))
     await expect(input?.next()).resolves.toMatchObject({ value: { message: { content: [{ text: 'first' }] } } })
     fake.push(init('claude-native-1'))
+    fake.push({
+      type: 'assistant',
+      session_id: 'claude-native-1',
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tool-1', name: 'Bash', input: { command: 'pwd' } }] },
+    } as unknown as SDKMessage)
+    fake.push({
+      type: 'user',
+      session_id: 'claude-native-1',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: '/work' }] },
+    } as unknown as SDKMessage)
     fake.push(result('claude-native-1', 'answer 1', 'turn-1'))
-    await expect(first).resolves.toContainEqual({ type: 'thread-started', nativeId: 'claude-native-1' })
+    await expect(first).resolves.toEqual(expect.arrayContaining([
+      { type: 'thread-started', nativeId: 'claude-native-1' },
+      { type: 'tool-start', callId: 'tool-1', name: 'Bash', input: { command: 'pwd' } },
+      { type: 'tool-result', callId: 'tool-1', output: '/work' },
+    ]))
 
     const second = collect(runtime.runTurn({ prompt: 'second', signal: new AbortController().signal }))
     await expect(input?.next()).resolves.toMatchObject({ value: { message: { content: [{ text: 'second' }] } } })

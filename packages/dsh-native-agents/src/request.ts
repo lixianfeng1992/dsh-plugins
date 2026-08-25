@@ -1,10 +1,8 @@
 import type { GenerateOptions, Message } from '@deepseek-ai/dsh-llm'
-import type {} from '@deepseek-ai/dsh-subagent'
 import { NativeAgentError } from './error.js'
 
 function conversationMessages(messages: readonly Message[]): Message[] {
-  return messages.filter(message => message.role === 'user'
-    && (message.source.kind === 'user' || message.source.kind === 'coordinator'))
+  return messages.filter(message => message.role === 'user' && message.source.kind === 'user')
 }
 
 /** Whether a missing binding may create the conversation represented by this request. */

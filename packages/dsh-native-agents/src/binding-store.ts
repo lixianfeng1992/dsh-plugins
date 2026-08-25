@@ -3,7 +3,7 @@ import { mkdir, open, readFile, rename } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { NativeAgentError } from './error.js'
 
-export type NativeProvider = 'codex' | 'claude-code'
+export type NativeProvider = string
 
 interface BindingBase {
   version: 1
@@ -39,7 +39,8 @@ function validateBinding(value: unknown, sessionId: string): NativeBinding {
   if (
     item.version !== 1
     || item.dshSessionId !== sessionId
-    || (item.provider !== 'codex' && item.provider !== 'claude-code')
+    || typeof item.provider !== 'string'
+    || item.provider.length === 0
     || (item.state !== 'creating' && item.state !== 'ready')
     || typeof item.cwd !== 'string'
     || item.cwd.length === 0
